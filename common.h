@@ -2460,6 +2460,24 @@ char* abs_path (const char *path, mem_pool_t *pool)
     return absolute_path;
 }
 
+//:sh_expand_was_a_bad_idea
+char* abs_path_no_sh_expand (const char *path, mem_pool_t *pool)
+{
+    mem_pool_t l_pool = {0};
+
+    char *absolute_path_m = realpath (path, NULL);
+    if (absolute_path_m == NULL) {
+        // NOTE: realpath() fails if the file does not exist.
+        printf ("Error: %s (%d)\n", strerror(errno), errno);
+    }
+    char *absolute_path = pom_strdup (pool, absolute_path_m);
+    free (absolute_path_m);
+
+    mem_pool_destroy (&l_pool);
+
+    return absolute_path;
+}
+
 void file_write (int file, void *pos,  ssize_t size)
 {
     if (write (file, pos, size) < size) {
@@ -2590,6 +2608,7 @@ char* full_file_read_full (mem_pool_t *pool, const char *path, uint64_t *len, bo
 //
 // Changing this causes an API break so for now we create this wrapper, but we
 // should update this everywhere, then remove the wrapper.
+//:sh_expand_was_a_bad_idea
 char* full_file_read (mem_pool_t *pool, const char *path)
 {
     return full_file_read_full (pool, path, NULL, true);
@@ -2697,6 +2716,31 @@ bool dir_exists (char *path)
     }
 
     free (dir_path);
+    return retval;
+}
+
+// TODO: Calling sh_expand() turns out to be a very bad idea, because it's very
+// common to have paths that contain () in them. I think a better default is to
+// just assume paths are absolute at this point.
+//:sh_expand_was_a_bad_idea
+bool dir_exists_no_sh_expand (char *path)
+{
+    bool retval = true;
+
+    struct stat st;
+    int status;
+    if ((status = stat(path, &st)) == -1) {
+        retval = false;
+        if (errno != ENOENT) {
+            printf ("Error checking existance of %s: %s\n", path, strerror(errno));
+        }
+
+    } else {
+        if (!S_ISDIR(st.st_mode)) {
+            return false;
+        }
+    }
+
     return retval;
 }
 
