@@ -15,12 +15,119 @@ static void MeowExpandSeed(meow_umm InputLen, void *Input, meow_u8 *SeedResult) 
 #define _XOPEN_SOURCE 700 // Required for strptime()
 #include "common.h"
 #include "binary_tree.c"
+#include "scanner.c"
+
+void cli_progress_bar (float val, float total)
+{
+    float percent = MIN((val/(total-1))*100, 100);
+    int length = 60;
+
+    char str[length+30];
+
+    static int prev = -1;
+    static int idx;
+
+    idx = length*percent/100;
+    if (prev != idx) {
+        prev = idx;
+        int i;
+        for (i=0; i<length; i++) {
+            if (i < idx) {
+                str[i] = '#';
+            } else {
+                str[i] = '-';
+            }
+        }
+        str[i] = '\0';
+        fprintf (stderr, "\r[%s] %.2f%%", str, percent);
+        if (percent == 100) {
+            fprintf (stderr, "\r\e[KComplete.\n");
+        }
+    }
+}
+
+void cli_status (char *message, float val)
+{
+    fprintf (stderr, "\r%s%.2f", message, val);
+}
+
+void cli_status_end ()
+{
+    fprintf (stderr, "\r\e[KComplete.\n");
+}
 
 struct string_lst_t {
     string_t s;
 
     struct string_lst_t *next;
 };
+
+void file_name_compute_relevance_characteristics (char *fname, bool *has_copy_parenthesis, uint64_t *space_cnt)
+{
+    assert (has_copy_parenthesis != NULL && space_cnt != NULL);
+
+    struct scanner_t _scnr = {0};
+    struct scanner_t *scnr = &_scnr;
+    scnr->pos = fname;
+
+    *space_cnt = 0;
+    *has_copy_parenthesis = false;
+    while (!scnr->is_eof) {
+        if (scanner_char (scnr, ' ')) {
+            (*space_cnt)++;
+        } else {
+            int i;
+            char *pos_backup = scnr->pos;
+            if (scanner_char (scnr, '(') &&
+                scanner_int (scnr, &i) &&
+                scanner_str (scnr, ").") &&
+                (scanner_strcase (scnr, "jpg") || scanner_strcase (scnr, "jpeg"))) {
+                *has_copy_parenthesis = true;
+
+            } else {
+                scnr->pos = pos_backup;
+                scanner_advance_char (scnr);
+            }
+        }
+    }
+}
+
+// This compares the relevance of the filename. It's used when we have identical
+// duplicates, to decide which name should be the one that isn't removed.
+// Compares two filenames and returns true if p1 is more relevant than p2.
+//
+// For now we only try to remove files with (n) in their name. Then we preffer
+// names without spaces.
+bool duplicate_file_name_cmp (struct string_lst_t *p1, struct string_lst_t *p2)
+{
+    mem_pool_t pool_l = {0};
+
+    char *fname1;
+    path_split (&pool_l, str_data(&p1->s), NULL, &fname1);
+    bool has_copy_parenthesis_1;
+    uint64_t space_cnt_1;
+    file_name_compute_relevance_characteristics (fname1, &has_copy_parenthesis_1, &space_cnt_1);
+
+    char *fname2;
+    path_split (&pool_l, str_data(&p2->s), NULL, &fname2);
+    bool has_copy_parenthesis_2;
+    uint64_t space_cnt_2;
+    file_name_compute_relevance_characteristics (fname2, &has_copy_parenthesis_2, &space_cnt_2);
+
+    bool is_p1_lt_p2;
+    if (has_copy_parenthesis_1 == true && has_copy_parenthesis_2 == false) {
+        is_p1_lt_p2 = false;
+    } else if (has_copy_parenthesis_1 == false && has_copy_parenthesis_2 == true) {
+        is_p1_lt_p2 = true;
+    } else {
+        is_p1_lt_p2 = space_cnt_1 < space_cnt_2;
+    }
+
+    mem_pool_destroy (&pool_l);
+    return is_p1_lt_p2;
+}
+
+templ_sort_ll (duplicate_relevance_sort, struct string_lst_t, duplicate_file_name_cmp(a, b));
 
 struct string_bucket_t {
     uint32_t count;
@@ -37,6 +144,7 @@ struct scrapbook_t {
     struct uint_64_to_str_tree_t hash_to_path;
 
     uint64_t total_size; 
+    uint64_t processed_files;
 };
 
 void push_file_hash (struct scrapbook_t *app, uint64_t hash, char *path)
@@ -60,11 +168,8 @@ void push_file_hash (struct scrapbook_t *app, uint64_t hash, char *path)
     }
 
     if (!found) {
-        struct string_lst_t *str = mem_pool_push_struct (&app->hash_to_path.pool, struct string_lst_t);
-        *str = ZERO_INIT (struct string_lst_t);
+        LINKED_LIST_PUSH_NEW (&app->hash_to_path.pool, struct string_lst_t, bucket->strings, str);
         str_set (&str->s, path);
-        LINKED_LIST_PUSH (bucket->strings, str);
-
         bucket->count++;
     }
 }
@@ -137,6 +242,7 @@ ITERATE_DIR_CB (find_duplicates_by_hash)
 {
     struct scrapbook_t *sb = (struct scrapbook_t*) data;
 
+    sb->processed_files++;
     char *extension = get_extension (fname);
     if (!is_dir && extension != NULL && strncasecmp (extension, "jpg", 3) == 0) {
         mem_pool_t pool_l = {0};
@@ -148,56 +254,75 @@ ITERATE_DIR_CB (find_duplicates_by_hash)
         push_file_hash (sb, hash_64 (file_data, file_len), fname);
         mem_pool_destroy (&pool_l);
     }
+    cli_status ("Read files: ", sb->processed_files);
 }
 
-void cli_status (float val, float total)
+void test_relevance_characteristics (char *fname)
 {
-    float percent = MIN((val/(total-1))*100, 100);
-    int length = 60;
+    bool has_copy_parenthesis;
+    uint64_t space_cnt;
+    file_name_compute_relevance_characteristics (fname, &has_copy_parenthesis, &space_cnt);
+    printf ("copy_parenthesis: %d, space_cnt: %lu -> %s\n", has_copy_parenthesis, space_cnt, fname);
+}
 
-    char str[length+30];
+void fname_comparison_test ()
+{
+    // Have copy parenthesis
+    test_relevance_characteristics ("hola (2).JPEG");
+    test_relevance_characteristics ("(a parenthesis) hola (2).jpg");
+    test_relevance_characteristics ("In the middle (a parenthesis) hola (2).JPG");
+    test_relevance_characteristics ("(3) hola (2).jpeg");
+    test_relevance_characteristics ("In the middle (10) hola(2).jpg.jpg");
 
-    static int prev = -1;
-    static int idx;
+    // No copy parenthesis
+    test_relevance_characteristics ("hola.JPEG");
+    test_relevance_characteristics ("hola(-1).JPEG");
+    test_relevance_characteristics ("(a parenthesis) hola.jpg");
+    test_relevance_characteristics ("In the middle (a parenthesis) hola.JPG");
+    test_relevance_characteristics ("(3) hola.jpeg");
+    test_relevance_characteristics ("In the middle (10) hola.jpg.jpg");
+}
 
-    idx = length*percent/100;
-    if (prev != idx) {
-        prev = idx;
-        int i;
-        for (i=0; i<length; i++) {
-            if (i < idx) {
-                str[i] = '#';
-            } else {
-                str[i] = '-';
+void print_bucket_list_fnames (struct string_bucket_t *bucket_lst)
+{
+    struct string_bucket_t *curr_bucket = bucket_lst;
+    while (curr_bucket != NULL) {
+        struct string_lst_t *curr_str = curr_bucket->strings;
+        while (curr_str != NULL) {
+            char *fname;
+            path_split (NULL, str_data(&curr_str->s), NULL, &fname);
+            printf ("'%s'", fname);
+            if (curr_str->next != NULL) {
+                printf (" ");
             }
+            free (fname);
+
+            curr_str = curr_str->next;
         }
-        str[i] = '\0';
-        fprintf (stderr, "\r[%s] %.2f%%", str, percent);
-        if (percent == 100) {
-            fprintf (stderr, "\r\e[KComplete.\n");
-        }
+        printf ("\n");
+
+        curr_bucket = curr_bucket->next;
     }
 }
 
 int main (int argc, char **argv)
 {
     struct scrapbook_t scrapbook = {0};
-
     if (argc >= 2) {
-
         printf ("Looking for duplicates in:\n");
         for (int i=1; i<argc; i++) {
             char *path = abs_path_no_sh_expand (argv[i], &scrapbook.pool);
             if (dir_exists_no_sh_expand(path)) {
                 printf ("  %s\n", path);
                 iterate_dir (path, find_duplicates_by_hash, &scrapbook);
+                cli_status_end ();
             }
         }
-
-        printf ("Total size read: %lu bytes\n", scrapbook.total_size);
         printf ("\n");
 
-        printf ("Tentative non unique files:\n");
+        printf ("Total files read: %lu\n", scrapbook.processed_files);
+        printf ("Total size read: %lu bytes\n", scrapbook.total_size);
+
         struct string_bucket_t *tentative_duplicates = NULL;
         uint32_t num_tentative_non_unique_files = 0;
         BINARY_TREE_FOR(uint_64_to_str, &scrapbook.hash_to_path, curr_node) {
@@ -206,68 +331,96 @@ int main (int argc, char **argv)
                 struct string_lst_t *curr_path = bucket->strings;
                 while (curr_path != NULL) {
                     num_tentative_non_unique_files++;
-                    printf ("%s ", str_data(&curr_path->s));
 
                     curr_path = curr_path->next;
                 }
-                printf ("\n");
 
                 LINKED_LIST_PUSH (tentative_duplicates, bucket);
             }
         }
         printf ("Tentative non unique file count: %d\n", num_tentative_non_unique_files);
-        printf ("\n");
 
-        printf ("Executing full comparison:\n");
         struct string_bucket_t *exact_duplicates = NULL;
         uint64_t exact_duplicates_len = 0;
         struct string_bucket_t *non_duplicates = NULL;
         uint64_t non_duplicates_len = 0;
+        if (num_tentative_non_unique_files > 0) {
+            printf ("\n");
+            printf ("Executing full comparison\n");
 
-        while (tentative_duplicates != NULL)
-        {
-            struct string_bucket_t *curr_bucket = LINKED_LIST_POP(tentative_duplicates);
+            while (tentative_duplicates != NULL)
+            {
+                struct string_bucket_t *curr_bucket = LINKED_LIST_POP(tentative_duplicates);
 
-            bool all_equal = true;
+                bool all_equal = true;
 
-            struct string_lst_t *curr_str = curr_bucket->strings;
-            while (all_equal && curr_str != NULL && curr_str->next != NULL) {
-                mem_pool_t pool_l = {0};
-                uint64_t f1_len;
-                char *f1 = full_file_read_full (&pool_l, str_data(&curr_str->s), &f1_len, false);
+                struct string_lst_t *curr_str = curr_bucket->strings;
+                while (all_equal && curr_str != NULL && curr_str->next != NULL) {
+                    mem_pool_t pool_l = {0};
+                    uint64_t f1_len;
+                    char *f1 = full_file_read_full (&pool_l, str_data(&curr_str->s), &f1_len, false);
 
-                uint64_t f2_len;
-                char *f2 = full_file_read_full (&pool_l, str_data(&curr_str->next->s), &f2_len, false);
+                    uint64_t f2_len;
+                    char *f2 = full_file_read_full (&pool_l, str_data(&curr_str->next->s), &f2_len, false);
 
-                if (f1_len != f2_len || memcmp (f1, f2, f1_len) != 0) {
-                    all_equal = false;
+                    if (f1_len != f2_len || memcmp (f1, f2, f1_len) != 0) {
+                        all_equal = false;
+                    }
+
+                    mem_pool_destroy (&pool_l);
+
+                    curr_str = curr_str->next;
                 }
 
-                mem_pool_destroy (&pool_l);
+                if (all_equal) {
+                    exact_duplicates_len += curr_bucket->count;
+                    LINKED_LIST_PUSH (exact_duplicates, curr_bucket);
+                } else {
+                    non_duplicates_len += curr_bucket->count;
+                    LINKED_LIST_PUSH (non_duplicates, curr_bucket);
+                }
 
+                cli_progress_bar (exact_duplicates_len+non_duplicates_len, num_tentative_non_unique_files);
+            }
+            printf ("\n");
+
+            printf ("Exact duplicates: %ld\n", exact_duplicates_len);
+            printf ("Non duplicates: %ld\n", non_duplicates_len);
+
+            if (non_duplicates_len != 0) {
+                // TODO: Correctly handle this case. I think one approach could be
+                // to do a full file comparison between all files in the bucket,
+                // then put the real duplicates in the exact_duplicates bucket list.
+                printf ("  Error: HASH COLLISIONS!!\n");
+            }
+        }
+
+        if (exact_duplicates_len > 0) {
+            struct string_lst_t *files_to_remove = NULL;
+            struct string_bucket_t *curr_bucket = exact_duplicates;
+            while (curr_bucket != NULL) {
+                duplicate_relevance_sort (&curr_bucket->strings, curr_bucket->count);
+
+                struct string_lst_t *curr_str = curr_bucket->strings->next;
+                while (curr_str != NULL) {
+                    LINKED_LIST_PUSH_NEW (&scrapbook.pool, struct string_lst_t, files_to_remove, new_string);
+                    str_set(&new_string->s, str_data(&curr_str->s));
+                    curr_str = curr_str->next;
+                }
+
+                curr_bucket = curr_bucket->next;
+            }
+
+            //print_bucket_list_fnames (exact_duplicates);
+
+            // This will print a huge rm command that will delete all duplicates.
+            printf ("rm ");
+            struct string_lst_t *curr_str = files_to_remove;
+            while (curr_str != NULL) {
+                printf ("'%s' ", str_data(&curr_str->s));
                 curr_str = curr_str->next;
             }
-
-            if (all_equal) {
-                exact_duplicates_len += curr_bucket->count;
-                LINKED_LIST_PUSH (exact_duplicates, curr_bucket);
-            } else {
-                non_duplicates_len += curr_bucket->count;
-                LINKED_LIST_PUSH (non_duplicates, curr_bucket);
-            }
-
-            cli_status (exact_duplicates_len+non_duplicates_len, num_tentative_non_unique_files);
-        }
-        printf ("\n");
-
-        printf ("Exact duplicates: %ld\n", exact_duplicates_len);
-        printf ("Non duplicates: %ld\n", non_duplicates_len);
-
-        if (non_duplicates_len != 0) {
-            // TODO: Correctly handle this case. I think one approach could be
-            // to do a full file comparison between all files in the bucket,
-            // then put the real duplicates in the exact_duplicates bucket list.
-            printf ("  Error: HASH COLLISIONS!!\n");
+            printf ("\n");
         }
 
     } else {
