@@ -92,6 +92,24 @@ void file_name_compute_relevance_characteristics (char *fname, bool *has_copy_pa
     }
 }
 
+void path_compute_relevance_characteristics (char *basename, uint64_t *depth)
+{
+    assert (depth != NULL);
+
+    struct scanner_t _scnr = {0};
+    struct scanner_t *scnr = &_scnr;
+    scnr->pos = basename;
+
+    *depth = 0;
+    while (!scnr->is_eof) {
+        if (scanner_char (scnr, '/')) {
+            (*depth)++;
+        } else {
+            scanner_advance_char (scnr);
+        }
+    }
+}
+
 // This compares the relevance of the filename. It's used when we have identical
 // duplicates, to decide which name should be the one that isn't removed.
 // Compares two filenames and returns true if p1 is more relevant than p2.
@@ -102,25 +120,33 @@ bool duplicate_file_name_cmp (struct string_lst_t *p1, struct string_lst_t *p2)
 {
     mem_pool_t pool_l = {0};
 
+    char *basename1;
     char *fname1;
-    path_split (&pool_l, str_data(&p1->s), NULL, &fname1);
+    path_split (&pool_l, str_data(&p1->s), &basename1, &fname1);
     bool has_copy_parenthesis_1;
     uint64_t space_cnt_1;
     file_name_compute_relevance_characteristics (fname1, &has_copy_parenthesis_1, &space_cnt_1);
+    uint64_t depth_1;
+    path_compute_relevance_characteristics (basename1, &depth_1);
 
+    char *basename2;
     char *fname2;
-    path_split (&pool_l, str_data(&p2->s), NULL, &fname2);
+    path_split (&pool_l, str_data(&p2->s), &basename2, &fname2);
     bool has_copy_parenthesis_2;
     uint64_t space_cnt_2;
     file_name_compute_relevance_characteristics (fname2, &has_copy_parenthesis_2, &space_cnt_2);
+    uint64_t depth_2;
+    path_compute_relevance_characteristics (basename2, &depth_2);
 
     bool is_p1_lt_p2;
     if (has_copy_parenthesis_1 == true && has_copy_parenthesis_2 == false) {
         is_p1_lt_p2 = false;
     } else if (has_copy_parenthesis_1 == false && has_copy_parenthesis_2 == true) {
         is_p1_lt_p2 = true;
+    } else if (space_cnt_1 < space_cnt_2) {
+        is_p1_lt_p2 = true;
     } else {
-        is_p1_lt_p2 = space_cnt_1 < space_cnt_2;
+        is_p1_lt_p2 = depth_1 < depth_2;
     }
 
     mem_pool_destroy (&pool_l);
@@ -305,6 +331,25 @@ void print_bucket_list_fnames (struct string_bucket_t *bucket_lst)
     }
 }
 
+void print_bucket_list_path (struct string_bucket_t *bucket_lst)
+{
+    struct string_bucket_t *curr_bucket = bucket_lst;
+    while (curr_bucket != NULL) {
+        struct string_lst_t *curr_str = curr_bucket->strings;
+        while (curr_str != NULL) {
+            printf ("'%s'", str_data(&curr_str->s));
+            if (curr_str->next != NULL) {
+                printf (" ");
+            }
+
+            curr_str = curr_str->next;
+        }
+        printf ("\n");
+
+        curr_bucket = curr_bucket->next;
+    }
+}
+
 int main (int argc, char **argv)
 {
     struct scrapbook_t scrapbook = {0};
@@ -412,6 +457,7 @@ int main (int argc, char **argv)
             }
 
             //print_bucket_list_fnames (exact_duplicates);
+            //print_bucket_list_path (exact_duplicates);
 
             // This will print a huge rm command that will delete all duplicates.
             printf ("rm ");
