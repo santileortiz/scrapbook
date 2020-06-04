@@ -264,11 +264,29 @@ char* partial_file_read (mem_pool_t *pool, const char *path, uint64_t max_size, 
     return retval;
 }
 
+struct collect_jpg_cb_clsr_t {
+    mem_pool_t *pool;
+    uint64_t count;
+    struct string_lst_t *files;
+};
+
+ITERATE_DIR_CB (collect_jpg_cb)
+{
+    struct collect_jpg_cb_clsr_t *clsr = (struct collect_jpg_cb_clsr_t*) data;
+
+    char *extension = get_extension (fname);
+    if (!is_dir && extension != NULL && strncasecmp (extension, "jpg", 3) == 0) {
+        LINKED_LIST_PUSH_NEW (clsr->pool, struct string_lst_t, clsr->files, new_node);
+        str_set (&new_node->s, fname);
+        clsr->count++;
+    }
+    cli_status ("Files collected: ", clsr->count);
+}
+
 ITERATE_DIR_CB (find_duplicates_by_hash)
 {
     struct scrapbook_t *sb = (struct scrapbook_t*) data;
 
-    sb->processed_files++;
     char *extension = get_extension (fname);
     if (!is_dir && extension != NULL && strncasecmp (extension, "jpg", 3) == 0) {
         mem_pool_t pool_l = {0};
@@ -280,7 +298,7 @@ ITERATE_DIR_CB (find_duplicates_by_hash)
         push_file_hash (sb, hash_64 (file_data, file_len), fname);
         mem_pool_destroy (&pool_l);
     }
-    cli_status ("Read files: ", sb->processed_files);
+    cli_status ("read files: ", sb->processed_files);
 }
 
 void test_relevance_characteristics (char *fname)
@@ -350,19 +368,46 @@ void print_bucket_list_path (struct string_bucket_t *bucket_lst)
     }
 }
 
-// Finds duplicates that are identical at file level.
-void file_duplicate (struct scrapbook_t *sb, int argc, char **argv)
+// Looks up directory names passed as cli arguments and recursiveley collects
+// all image files inside of them.
+struct string_lst_t* collect_jpg_from_cli (mem_pool_t *pool, int argc, char **argv)
 {
-    printf ("Looking for duplicates in:\n");
+    struct collect_jpg_cb_clsr_t clsr = {0};
+    clsr.pool = pool;
+
+    printf ("Collecting images in:\n");
     for (int i=1; i<argc; i++) {
-        char *path = abs_path_no_sh_expand (argv[i], &sb->pool);
+        char *path = abs_path_no_sh_expand (argv[i], NULL);
         if (dir_exists_no_sh_expand(path)) {
             printf ("  %s\n", path);
-            iterate_dir (path, find_duplicates_by_hash, sb);
+            iterate_dir (path, collect_jpg_cb, &clsr);
             cli_status_end ();
         }
+        free (path);
     }
     printf ("\n");
+
+    return clsr.files;
+}
+
+// Finds duplicates that are identical at file level.
+void find_file_duplicates (struct scrapbook_t *sb, struct string_lst_t *files)
+{
+    struct string_lst_t *curr_str = files;
+    while (curr_str != NULL) {
+        mem_pool_t pool_l = {0};
+        sb->processed_files++;
+
+        uint64_t file_len = 0;
+        char *fname = str_data(&curr_str->s);
+        char *file_data = partial_file_read (&pool_l, fname, kilobyte(1), &file_len);
+        sb->total_size += file_len;
+
+        push_file_hash (sb, hash_64 (file_data, file_len), fname);
+
+        mem_pool_destroy (&pool_l);
+        curr_str = curr_str->next;
+    }
 
     printf ("Total files read: %lu\n", sb->processed_files);
     printf ("Total size read: %lu bytes\n", sb->total_size);
@@ -473,7 +518,8 @@ int main (int argc, char **argv)
 {
     struct scrapbook_t scrapbook = {0};
     if (argc >= 2) {
-        file_duplicate (&scrapbook, argc, argv);
+        struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc, argv);
+        find_file_duplicates (&scrapbook, images);
     } else {
         printf ("Usage:\nscrapbook <directory name>\n");
     }
