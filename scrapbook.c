@@ -17,6 +17,8 @@ static void MeowExpandSeed(meow_umm InputLen, void *Input, meow_u8 *SeedResult) 
 #include "binary_tree.c"
 #include "scanner.c"
 
+#include "jpg_utils.c"
+
 void cli_progress_bar (float val, float total)
 {
     float percent = MIN((val/(total-1))*100, 100);
@@ -514,12 +516,26 @@ void find_file_duplicates (struct scrapbook_t *sb, struct string_lst_t *files)
     }
 }
 
+// This duplicate detection will be based on the image data inside the jpg file.
+// The idea is to be able to detect cases where the image data is the same but
+// metadata (exif tags) have changed.
+void find_image_duplicates (struct scrapbook_t *sb, struct string_lst_t *files)
+{
+    struct string_lst_t *curr_str = files;
+    while (curr_str != NULL) {
+        jpg_read (str_data(&curr_str->s));
+        curr_str = curr_str->next;
+    }
+}
+
 int main (int argc, char **argv)
 {
     struct scrapbook_t scrapbook = {0};
     if (argc >= 2) {
-        struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc, argv);
-        find_file_duplicates (&scrapbook, images);
+        //struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc, argv);
+        //find_file_duplicates (&scrapbook, images);
+        //find_image_duplicates (&scrapbook, images);
+
     } else {
         printf ("Usage:\nscrapbook <directory name>\n");
     }
