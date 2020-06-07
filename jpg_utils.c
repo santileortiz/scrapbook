@@ -22,18 +22,17 @@ bool file_read_bytes (int file, uint64_t bytes_to_read, string_t *buffer)
     return success;
 }
 
-void print_bytes (uint8_t *bytes, uint64_t len)
+void str_cat_bytes (string_t *str, uint8_t *bytes, uint64_t len)
 {
-    while (len !=0) {
-        printf ("%02X", *bytes);
+    while (len != 0) {
+        str_cat_printf (str, "0x%02X", *bytes);
 
         len--;
         if (len != 0) {
-            printf (" ");
+            str_cat_c (str, " ");
         }
         bytes++;
     }
-    printf ("\n");
 }
 
 uint8_t* bin_data (string_t *str)
@@ -70,22 +69,18 @@ void jpg_reader_destroy (struct jpg_reader_t *rdr)
     JPG_MARKER_ROW(SOF1,  0xFFC1)  \
     JPG_MARKER_ROW(SOF2,  0xFFC2)  \
     JPG_MARKER_ROW(SOF3,  0xFFC3)  \
-    JPG_MARKER_ROW(SOF4,  0xFFC4)  \
+    JPG_MARKER_ROW(DHT,   0xFFC4)  \
     JPG_MARKER_ROW(SOF5,  0xFFC5)  \
     JPG_MARKER_ROW(SOF6,  0xFFC6)  \
     JPG_MARKER_ROW(SOF7,  0xFFC7)  \
-    JPG_MARKER_ROW(SOF8,  0xFFC8)  \
+    JPG_MARKER_ROW(JPG,   0xFFC8)  \
     JPG_MARKER_ROW(SOF9,  0xFFC9)  \
-    JPG_MARKER_ROW(SOF10, 0xFFC10) \
-    JPG_MARKER_ROW(SOF11, 0xFFC11) \
-    JPG_MARKER_ROW(SOF12, 0xFFC12) \
-    JPG_MARKER_ROW(SOF13, 0xFFC13) \
-    JPG_MARKER_ROW(SOF14, 0xFFC14) \
-    JPG_MARKER_ROW(SOF15, 0xFFC15) \
-                                   \
-    JPG_MARKER_ROW(DHT, 0xFFC4)    \
-                                   \
-    JPG_MARKER_ROW(DAC, 0xFFCC)    \
+    JPG_MARKER_ROW(SOF10, 0xFFCA)  \
+    JPG_MARKER_ROW(SOF11, 0xFFCB)  \
+    JPG_MARKER_ROW(DAC,   0xFFCC)  \
+    JPG_MARKER_ROW(SOF13, 0xFFCD)  \
+    JPG_MARKER_ROW(SOF14, 0xFFCE)  \
+    JPG_MARKER_ROW(SOF15, 0xFFCF)  \
                                    \
     JPG_MARKER_ROW(RST0, 0xFFD0)   \
     JPG_MARKER_ROW(RST1, 0xFFD1)   \
@@ -96,14 +91,14 @@ void jpg_reader_destroy (struct jpg_reader_t *rdr)
     JPG_MARKER_ROW(RST6, 0xFFD6)   \
     JPG_MARKER_ROW(RST7, 0xFFD7)   \
                                    \
-    JPG_MARKER_ROW(SOI, 0xFFD8)    \
-    JPG_MARKER_ROW(EOI, 0xFFD9)    \
-    JPG_MARKER_ROW(SOS, 0xFFDA)    \
-    JPG_MARKER_ROW(DQT, 0xFFDB)    \
-    JPG_MARKER_ROW(DNL, 0xFFDC)    \
-    JPG_MARKER_ROW(DRI, 0xFFDD)    \
-    JPG_MARKER_ROW(DHP, 0xFFDE)    \
-    JPG_MARKER_ROW(EXP, 0xFFDF)    \
+    JPG_MARKER_ROW(SOI,  0xFFD8)   \
+    JPG_MARKER_ROW(EOI,  0xFFD9)   \
+    JPG_MARKER_ROW(SOS,  0xFFDA)   \
+    JPG_MARKER_ROW(DQT,  0xFFDB)   \
+    JPG_MARKER_ROW(DNL,  0xFFDC)   \
+    JPG_MARKER_ROW(DRI,  0xFFDD)   \
+    JPG_MARKER_ROW(DHP,  0xFFDE)   \
+    JPG_MARKER_ROW(EXP,  0xFFDF)   \
                                    \
     JPG_MARKER_ROW(APP0,  0xFFE0)  \
     JPG_MARKER_ROW(APP1,  0xFFE1)  \
@@ -115,12 +110,12 @@ void jpg_reader_destroy (struct jpg_reader_t *rdr)
     JPG_MARKER_ROW(APP7,  0xFFE7)  \
     JPG_MARKER_ROW(APP8,  0xFFE8)  \
     JPG_MARKER_ROW(APP9,  0xFFE9)  \
-    JPG_MARKER_ROW(APP10, 0xFFE10) \
-    JPG_MARKER_ROW(APP11, 0xFFE11) \
-    JPG_MARKER_ROW(APP12, 0xFFE12) \
-    JPG_MARKER_ROW(APP13, 0xFFE13) \
-    JPG_MARKER_ROW(APP14, 0xFFE14) \
-    JPG_MARKER_ROW(APP15, 0xFFE15) \
+    JPG_MARKER_ROW(APP10, 0xFFEA)  \
+    JPG_MARKER_ROW(APP11, 0xFFEB)  \
+    JPG_MARKER_ROW(APP12, 0xFFEC)  \
+    JPG_MARKER_ROW(APP13, 0xFFED)  \
+    JPG_MARKER_ROW(APP14, 0xFFEE)  \
+    JPG_MARKER_ROW(APP15, 0xFFEF)  \
                                    \
     JPG_MARKER_ROW(COM, 0xFFFE)    \
                                    \
@@ -133,7 +128,11 @@ enum marker_t {
 #undef JPG_MARKER_ROW
 
 #define JPG_MARKER_APP(marker) ((marker & 0xFFF0) == JPG_MARKER_APP0)
-#define JPG_MARKER_SOF(marker) ((marker & 0xFFF0) == JPG_MARKER_SOF0)
+#define JPG_MARKER_SOF(marker) (marker != JPG_MARKER_DHT && \
+                                marker != JPG_MARKER_JPG && \
+                                marker != JPG_MARKER_DAC && \
+                                (marker & 0xFFF0) == JPG_MARKER_SOF0)
+#define JPG_MARKER_RST(marker) ((marker & 0xFFF0) == JPG_MARKER_RST0 && (marker & 0x000F) <= 7)
 
 bool jpg_reader_init (struct jpg_reader_t *rdr, char *path)
 {
@@ -163,6 +162,23 @@ bool jpg_reader_init (struct jpg_reader_t *rdr, char *path)
     return success;
 }
 
+GCC_PRINTF_FORMAT(2, 3)
+void jpg_error (struct jpg_reader_t *rdr, const char *format, ...)
+{
+    if (rdr->error == true) {
+        return;
+    }
+    rdr->error = true;
+
+    PRINTF_INIT (format, size, args);
+    // Here size includes NULL byte and str_maybe_grow() adds 1 to passed size
+    // to ensure space for a NULL byte. Need to substract 1.
+    str_maybe_grow (&rdr->error_msg, size - 1, false); 
+    char *str = str_data (&rdr->error_msg);
+
+    PRINTF_SET (str, size, format, args);
+}
+
 void jpg_read_bytes (struct jpg_reader_t *rdr, uint64_t bytes_to_read)
 {
     if (rdr->error == true) {
@@ -170,14 +186,24 @@ void jpg_read_bytes (struct jpg_reader_t *rdr, uint64_t bytes_to_read)
     }
 
     if (!file_read_bytes (rdr->file, bytes_to_read, &rdr->buff)) {
-        rdr->error = true;
-        printf ("Read error.\n");
+        jpg_error (rdr, "JPG file read error.");
+    }
+}
+
+void jpg_advance_bytes (struct jpg_reader_t *rdr, off_t length)
+{
+    if (rdr->error == true) {
+        return;
+    }
+
+    if (lseek (rdr->file, length, SEEK_CUR) == -1) {
+        jpg_error (rdr, "Error in call to lseek(): %s", strerror(errno));
     }
 }
 
 // NOTE: This returns constant strings, you shouldn't try writing to or freeing
 // them.
-char* jpg_get_marker_name (struct jpg_reader_t *rdr, enum marker_t marker)
+char* marker_name (struct jpg_reader_t *rdr, enum marker_t marker)
 {
     return jpg_marker_to_str_get (&rdr->marker_names, marker);
 }
@@ -189,7 +215,6 @@ void jpg_expected_marker_error (struct jpg_reader_t *rdr, enum marker_t marker)
     }
 
     rdr->error = true;
-    printf ("Expected marker: %s\n", jpg_get_marker_name(rdr, marker));
 }
 
 // TODO: Make sure endianness is correct. Either make this function work for
@@ -201,8 +226,14 @@ enum marker_t jpg_read_marker (struct jpg_reader_t *rdr)
     jpg_read_bytes (rdr, 2);
     if (!rdr->error) {
         uint8_t *data = bin_data(&rdr->buff);
-        if (data[0] == 0xFF) {
+        if (data[0] == 0xFF &&
+            ((data[1] & 0xF0) == 0xC0 || (data[1] & 0xF0) == 0xD0 || (data[1] & 0xF0) == 0xE0 ||
+            data[1] == JPG_MARKER_COM || data[1] == JPG_MARKER_TEM)) {
             marker = ((int)data[0])<<8 | (int)data[1];
+        } else {
+            jpg_error (rdr, "Tried to read invalid marker '");
+            str_cat_bytes (&rdr->error_msg, data, 2);
+            str_cat_c (&rdr->error_msg, "'");
         }
     }
 
@@ -214,11 +245,43 @@ void jpg_expect_marker (struct jpg_reader_t *rdr, enum marker_t expected_marker)
     enum marker_t read_marker = jpg_read_marker (rdr);
     if (!rdr->error) {
         if (read_marker != expected_marker) {
-            jpg_expected_marker_error (rdr, expected_marker);
-        } else {
-            printf ("Found expected marker: %s\n", jpg_get_marker_name(rdr, expected_marker));
+            jpg_error (rdr, "Expected marker '%s' got: %s",
+                       marker_name(rdr, expected_marker),
+                       marker_name(rdr, read_marker));
         }
     }
+}
+
+// NOTE: Be careful not to call this after stand alone markers SOI, EOI and TEM.
+// :endianess_dependant
+int jpg_read_marker_segment_length (struct jpg_reader_t *rdr)
+{
+    int length = 0;
+    jpg_read_bytes (rdr, 2);
+    if (!rdr->error) {
+        uint8_t *data = bin_data(&rdr->buff);
+        length = ((int)data[0])<<8 | (int)data[1];
+    }
+
+    return length;
+}
+
+static inline
+bool is_tables_misc_marker (enum marker_t marker)
+{
+    return marker == JPG_MARKER_DQT ||
+        marker == JPG_MARKER_DHT ||
+        marker == JPG_MARKER_DAC ||
+        marker == JPG_MARKER_DRI ||
+        marker == JPG_MARKER_COM ||
+        JPG_MARKER_APP(marker);
+}
+
+static inline
+bool is_scan_start (enum marker_t marker)
+{
+    return is_tables_misc_marker(marker) ||
+        marker == JPG_MARKER_SOS;
 }
 
 void jpg_read (char *path)
@@ -227,46 +290,136 @@ void jpg_read (char *path)
 
     printf ("Reading: %s\n", path);
 
-    struct jpg_reader_t rdr = {0};
-    jpg_reader_init (&rdr, path);
+    struct jpg_reader_t _rdr = {0};
+    struct jpg_reader_t *rdr = &_rdr;
+    jpg_reader_init (rdr, path);
 
     if (success) {
-        jpg_expect_marker (&rdr, JPG_MARKER_SOI);
+        jpg_expect_marker (rdr, JPG_MARKER_SOI);
 
-        // Read frame table-specification and miscellaneous marker segments
-        enum marker_t marker = jpg_read_marker (&rdr);
+        // Frame table-specification and miscellaneous marker segments
+        enum marker_t marker = jpg_read_marker (rdr);
         if (marker == JPG_MARKER_APP0) {
-            printf ("JFIF\n");
+            printf ("File seems to be JFIF\n");
         } else if (marker == JPG_MARKER_APP1) {
-            printf ("EXIF\n");
+            printf ("File seems to be EXIF\n");
+        }
+        printf ("\n");
+
+        {
+            bool first = true;
+            while (is_tables_misc_marker(marker)) {
+                if (first) {
+                    printf ("Tables/misc.\n");
+                    first = false;
+                }
+
+                printf (" %s\n", marker_name(rdr, marker));
+                int marker_segment_length = jpg_read_marker_segment_length (rdr);
+                jpg_advance_bytes (rdr, marker_segment_length - 2);
+
+                marker = jpg_read_marker (rdr);
+            }
         }
 
-        //while (true) {
-        //    if (marker == JPG_MARKER_DQT ||
-        //        marker == JPG_MARKER_DHT ||
-        //        marker == JPG_MARKER_DAC ||
-        //        marker == JPG_MARKER_DRI ||
-        //        marker == JPG_MARKER_COM ||
-        //        JPG_MARKER_APP(marker))
-        //    {
-        //        // Skip marker segments
-        //    } else {
-        //        break;
-        //    }
-
-        //    marker = jpg_read_marker (&rdr);
-        //}
-
-        //if (JPG_MARKER_SOF(marker)) {
-        //    jpg_expected_marker_error (&rdr, JPG_MARKER_SOF0);
-        //} 
-
-        // Read frame header
+        // Frame header
+        if (JPG_MARKER_SOF(marker)) {
+            printf ("%s\n", marker_name(rdr, marker));
+            int marker_segment_length = jpg_read_marker_segment_length (rdr);
+            jpg_advance_bytes (rdr, marker_segment_length - 2);
+        } else {
+            jpg_error (rdr, "Expected SOF marker, got '%s'", marker_name(rdr, marker));
+        } 
 
         // Read Scans
+        // TODO: From here on we pretty much need to read the full file.
+        // Probably ther fastest thing to do is to try to load the rest, so we
+        // avoid making a lot of unnecessary system calls.
+        uint64_t scan_count = 1;
+        marker = jpg_read_marker (rdr);
+        while (!rdr->error && is_scan_start(marker)) {
+            printf ("Scan %lu\n", scan_count);
 
-        //jpg_expect_marker (&rdr, JPG_MARKER_EOI);
+            {
+                bool first = true;
+                while (is_tables_misc_marker(marker))
+                {
+                    if (first) {
+                        printf (" Tables/misc.\n");
+                        first = false;
+                    }
 
-        jpg_reader_destroy (&rdr);
+                    printf ("  %s\n", marker_name(rdr, marker));
+                    int marker_segment_length = jpg_read_marker_segment_length (rdr);
+                    jpg_advance_bytes (rdr, marker_segment_length - 2);
+
+                    marker = jpg_read_marker (rdr);
+                }
+            }
+
+            if (marker == JPG_MARKER_SOS) {
+                printf (" %s\n", marker_name(rdr, marker));
+                int marker_segment_length = jpg_read_marker_segment_length (rdr);
+                jpg_advance_bytes (rdr, marker_segment_length - 2);
+            } else {
+                jpg_error (rdr, "Expected SOS marker, got '%s'", marker_name(rdr, marker));
+            } 
+
+            uint64_t ecs_count = 0;
+            uint64_t rst_check = 0;
+            uint64_t rst_errors_found = 0;
+            while (!rdr->error) {
+                // Process ECS block
+                uint64_t buffer = 0x0;
+                while (!rdr->error &&
+                       ((buffer & 0xFF00) != 0xFF00 || (buffer & 0xFF) == 0x0))
+                {
+                    jpg_read_bytes (rdr, 1);
+                    uint8_t *data = bin_data(&rdr->buff);
+                    buffer <<= 8;
+                    buffer |= *data;
+                }
+                ecs_count++;
+
+                // Handle RST marker or end ECS segment processing.
+                marker = 0xFFFF & buffer;
+                if (JPG_MARKER_RST(marker)) {
+                    if ((marker ^ JPG_MARKER_RST0) != rst_check) {
+                        rst_errors_found++;
+                    }
+                } else {
+                    break;
+                }
+
+                rst_check = (rst_check+1) % 8;
+                fprintf (stderr, "\r ECS (%lu)", ecs_count);
+            }
+            fprintf (stderr, "\r");
+
+            printf (" ECS (%lu)", ecs_count);
+            if (rst_errors_found > 0) {
+                printf ("- errors %lu\n", rst_errors_found);
+            } else {
+                printf ("\n");
+            }
+
+            if (marker == JPG_MARKER_EOI) {
+                printf ("EOI\n");
+                break;
+            } 
+
+            scan_count++;
+        }
+
+        if (marker != JPG_MARKER_EOI) {
+            jpg_error (rdr, "Expected marker EOI got: %s", marker_name(rdr, marker));
+        } 
+
+
+        if (rdr->error) {
+            printf (ECMA_RED("error:") " %s\n", str_data(&rdr->error_msg));
+        }
+
+        jpg_reader_destroy (rdr);
     }
 }
