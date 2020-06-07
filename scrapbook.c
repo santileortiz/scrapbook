@@ -16,9 +16,11 @@ static void MeowExpandSeed(meow_umm InputLen, void *Input, meow_u8 *SeedResult) 
 #include "common.h"
 #include "binary_tree.c"
 #include "scanner.c"
+#include "cli_parser.c"
 
 #include "jpg_utils.c"
 
+// TODO: Move these into common.h? they seem quite useful.
 void cli_progress_bar (float val, float total)
 {
     float percent = MIN((val/(total-1))*100, 100);
@@ -48,11 +50,14 @@ void cli_progress_bar (float val, float total)
     }
 }
 
+// TODO: Make these prinf-like
+// :make_print_like
 void cli_status (char *message, float val)
 {
     fprintf (stderr, "\r%s%.2f", message, val);
 }
 
+// :make_print_like
 void cli_status_end ()
 {
     fprintf (stderr, "\r\e[KComplete.\n");
@@ -122,8 +127,8 @@ bool duplicate_file_name_cmp (struct string_lst_t *p1, struct string_lst_t *p2)
 {
     mem_pool_t pool_l = {0};
 
-    char *basename1;
-    char *fname1;
+    char *basename1 = NULL;
+    char *fname1 = NULL;
     path_split (&pool_l, str_data(&p1->s), &basename1, &fname1);
     bool has_copy_parenthesis_1;
     uint64_t space_cnt_1;
@@ -131,8 +136,8 @@ bool duplicate_file_name_cmp (struct string_lst_t *p1, struct string_lst_t *p2)
     uint64_t depth_1;
     path_compute_relevance_characteristics (basename1, &depth_1);
 
-    char *basename2;
-    char *fname2;
+    char *basename2 = NULL;
+    char *fname2 = NULL;
     path_split (&pool_l, str_data(&p2->s), &basename2, &fname2);
     bool has_copy_parenthesis_2;
     uint64_t space_cnt_2;
@@ -335,7 +340,7 @@ void print_bucket_list_fnames (struct string_bucket_t *bucket_lst)
     while (curr_bucket != NULL) {
         struct string_lst_t *curr_str = curr_bucket->strings;
         while (curr_str != NULL) {
-            char *fname;
+            char *fname = NULL;
             path_split (NULL, str_data(&curr_str->s), NULL, &fname);
             printf ("'%s'", fname);
             if (curr_str->next != NULL) {
@@ -531,13 +536,16 @@ void find_image_duplicates (struct scrapbook_t *sb, struct string_lst_t *files)
 int main (int argc, char **argv)
 {
     struct scrapbook_t scrapbook = {0};
-    if (argc >= 2) {
-        //struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc, argv);
-        //find_file_duplicates (&scrapbook, images);
-        //find_image_duplicates (&scrapbook, images);
+    char *argument = NULL;
+    if ((argument = get_cli_arg_opt ("--jpeg-structure", argv, argc)) != NULL) {
+        jpg_read (argument);
+
+    } else if ((argument = get_cli_arg_opt ("--find-duplicates-file", argv, argc)) != NULL) {
+        struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc-1, argv+1);
+        find_file_duplicates (&scrapbook, images);
 
     } else {
-        printf ("Usage:\nscrapbook <directory name>\n");
+        printf ("Usage:\nscrapbook [--jpeg-structure <file> | --find-duplicates-file <directory>]\n");
     }
 
     mem_pool_destroy (&scrapbook.pool);

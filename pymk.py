@@ -3,7 +3,7 @@ from mkpy.utility import *
 
 modes = {
         'debug': '-O0 -g -Wall',
-        'profile_debug': '-O2 -g -pg -Wall',
+        'profile_debug': '-O3 -g -pg -Wall',
         'release': '-O3 -g -DNDEBUG -Wall'
         }
 mode = store('mode', get_cli_arg_opt('-M,--mode', modes.keys()), 'debug')

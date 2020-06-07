@@ -406,9 +406,10 @@ void jpg_read (char *path)
 
     printf ("Reading: %s\n", path);
 
+    bool from_file = false;
     struct jpg_reader_t _rdr = {0};
     struct jpg_reader_t *rdr = &_rdr;
-    jpg_reader_init (rdr, path, false);
+    jpg_reader_init (rdr, path, from_file);
 
     if (success) {
         jpg_expect_marker (rdr, JPG_MARKER_SOI);
@@ -490,7 +491,17 @@ void jpg_read (char *path)
                 while (!rdr->error &&
                        ((buffer & 0xFF00) != 0xFF00 || (buffer & 0xFF) == 0x0))
                 {
-                    uint8_t *data = jpg_read_bytes (rdr, 1);
+                    uint8_t *data;
+                    if (from_file) {
+                        data = jpg_read_bytes (rdr, 1);
+                    } else {
+                        // @performance
+                        // Avoiding the function pointer dereference makes
+                        // processing ~4x faster.
+                        data = rdr->pos;
+                        rdr->pos++;
+                    }
+
                     buffer <<= 8;
                     buffer |= *data;
                 }
