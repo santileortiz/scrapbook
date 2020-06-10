@@ -326,15 +326,6 @@ char* marker_name (struct jpg_reader_t *rdr, enum marker_t marker)
     return jpg_marker_to_str_get (&rdr->marker_names, marker);
 }
 
-void jpg_expected_marker_error (struct jpg_reader_t *rdr, enum marker_t marker)
-{
-    if (rdr->error == false) {
-        return;
-    }
-
-    rdr->error = true;
-}
-
 // TODO: Make sure endianness is correct. Either make this function work for
 // both endianesses or force the compiler to always use one endianess.
 // :endianess_dependant
@@ -400,16 +391,15 @@ bool is_scan_start (enum marker_t marker)
         marker == JPG_MARKER_SOS;
 }
 
-void jpg_read (char *path)
+void print_jpeg_structure (char *path)
 {
     bool success = true;
 
     printf ("Reading: %s\n", path);
 
-    bool from_file = false;
     struct jpg_reader_t _rdr = {0};
     struct jpg_reader_t *rdr = &_rdr;
-    jpg_reader_init (rdr, path, from_file);
+    jpg_reader_init (rdr, path, false);
 
     if (success) {
         jpg_expect_marker (rdr, JPG_MARKER_SOI);
@@ -491,16 +481,14 @@ void jpg_read (char *path)
                 while (!rdr->error &&
                        ((buffer & 0xFF00) != 0xFF00 || (buffer & 0xFF) == 0x0))
                 {
-                    uint8_t *data;
-                    if (from_file) {
-                        data = jpg_read_bytes (rdr, 1);
-                    } else {
-                        // @performance
-                        // Avoiding the function pointer dereference makes
-                        // processing ~4x faster.
-                        data = rdr->pos;
-                        rdr->pos++;
-                    }
+                    // @performance
+                    // Avoiding the function pointer call makes
+                    // processing ~4x faster.
+                    //
+                    // Equivalent to:
+                    // data = jpg_read_bytes (rdr, 1);
+                    uint8_t *data = rdr->pos;
+                    rdr->pos++;
 
                     buffer <<= 8;
                     buffer |= *data;

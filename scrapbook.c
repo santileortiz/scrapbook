@@ -528,7 +528,7 @@ void find_image_duplicates (struct scrapbook_t *sb, struct string_lst_t *files)
 {
     struct string_lst_t *curr_str = files;
     while (curr_str != NULL) {
-        jpg_read (str_data(&curr_str->s));
+        print_jpeg_structure (str_data(&curr_str->s));
         curr_str = curr_str->next;
     }
 }
@@ -538,7 +538,7 @@ int main (int argc, char **argv)
     struct scrapbook_t scrapbook = {0};
     char *argument = NULL;
     if ((argument = get_cli_arg_opt ("--jpeg-structure", argv, argc)) != NULL) {
-        jpg_read (argument);
+        print_jpeg_structure (argument);
 
     } else if ((argument = get_cli_arg_opt ("--find-duplicates-file", argv, argc)) != NULL) {
         struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc-1, argv+1);
