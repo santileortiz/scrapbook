@@ -535,3 +535,74 @@ void print_jpeg_structure (char *path)
         jpg_reader_destroy (rdr);
     }
 }
+
+void print_exif (char *path)
+{
+    bool success = true;
+
+    printf ("Reading: %s\n", path);
+
+    struct jpg_reader_t _rdr = {0};
+    struct jpg_reader_t *rdr = &_rdr;
+    jpg_reader_init (rdr, path, true);
+
+    if (success) {
+        jpg_expect_marker (rdr, JPG_MARKER_SOI);
+
+        // Frame table-specification and miscellaneous marker segments
+        bool is_exif = false;
+        bool is_jfif = false;
+        enum marker_t marker = jpg_read_marker (rdr);
+        if (marker == JPG_MARKER_APP0) {
+            is_jfif = true;
+        } else if (marker == JPG_MARKER_APP1) {
+            is_exif = true;
+        }
+
+        if (is_jfif || !is_exif) {
+            // Do exhaustive search? Maybe some broken implementation put the
+            // APP1 segment not at the beginning. Looks like the IJG's JPEG
+            // implementation did this for a while [1].
+            //
+            // [1] http://sylvana.net/jpegcrop/exifpatch.html
+        } else {
+            int marker_segment_length = jpg_read_marker_segment_length (rdr);
+
+            uint8_t *exif_id_code = jpg_read_bytes (rdr, 6);
+            if (memcmp (exif_id_code, "Exif\0\0", 6) == 0) {
+                int tiff_data_size = 0;
+                printf ("Found Exif APP1 marker segment\n");
+                // TODO: Start the TIFF format reader, and compute
+                // tiff_data_size.
+
+                if (tiff_data_size != marker_segment_length - 8) {
+                    printf (ECMA_YELLOW("warning:") " Exif data doesn't match APP1 marker segment size.\n");
+                }
+            }
+        }
+
+        //// Ignore the rest of the Table/misc. marker segments
+        //{
+        //    while (is_tables_misc_marker(marker)) {
+        //        int marker_segment_length = jpg_read_marker_segment_length (rdr);
+        //        jpg_advance_bytes (rdr, marker_segment_length - 2);
+
+        //        marker = jpg_read_marker (rdr);
+        //    }
+        //}
+
+        //// Frame header
+        //if (JPG_MARKER_SOF(marker)) {
+        //    int marker_segment_length = jpg_read_marker_segment_length (rdr);
+        //    jpg_advance_bytes (rdr, marker_segment_length - 2);
+        //} else {
+        //    jpg_error (rdr, "Expected SOF marker, got '%s'", marker_name(rdr, marker));
+        //} 
+
+        if (rdr->error) {
+            printf (ECMA_RED("error:") " %s\n", str_data(&rdr->error_msg));
+        }
+
+        jpg_reader_destroy (rdr);
+    }
+}

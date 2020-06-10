@@ -540,6 +540,9 @@ int main (int argc, char **argv)
     if ((argument = get_cli_arg_opt ("--jpeg-structure", argv, argc)) != NULL) {
         print_jpeg_structure (argument);
 
+    } else if ((argument = get_cli_arg_opt ("--exif", argv, argc)) != NULL) {
+        print_exif (argument);
+
     } else if ((argument = get_cli_arg_opt ("--find-duplicates-file", argv, argc)) != NULL) {
         struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc-1, argv+1);
         find_file_duplicates (&scrapbook, images);
