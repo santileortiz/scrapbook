@@ -47,6 +47,11 @@ uint8_t* bin_data (string_t *str)
 
 struct jpg_reader_t;
 
+enum jpg_reader_endianess_t {
+    BYTE_READER_BIG_ENDIAN,
+    BYTE_READER_LITTLE_ENDIAN,
+};
+
 #define JPG_READER_API_READ_BYTES(name) \
     uint8_t* name(struct jpg_reader_t *rdr, uint64_t bytes_to_read)
 typedef JPG_READER_API_READ_BYTES(jpg_reader_api_read_bytes_t);
@@ -67,6 +72,8 @@ struct jpg_reader_t {
 
     uint64_t file_size;
     uint64_t offset;
+
+    enum jpg_reader_endianess_t endianess;
 
     struct jpg_marker_to_str_tree_t marker_names;
 
@@ -360,17 +367,43 @@ void jpg_expect_marker (struct jpg_reader_t *rdr, enum marker_t expected_marker)
     }
 }
 
+// Hopefully in the optimized build these loops are unrolled?
+uint64_t jpg_reader_read_value (struct jpg_reader_t *rdr, int value_size)
+{
+    assert (value_size < 8);
+
+    uint64_t value = 0;
+    uint8_t *data = jpg_read_bytes (rdr, value_size);
+    if (rdr->endianess == BYTE_READER_LITTLE_ENDIAN) {
+        if (!rdr->error) {
+            for (int i=value_size-1; i>=0; i--) {
+                value |= (uint64_t)data[i];
+                if (i > 0) {
+                    value <<= 8;
+                }
+            }
+        }
+
+    } else { // if (rdr->endianess == BYTE_READER_BIG_ENDIAN) {
+        if (!rdr->error) {
+            for (int i=0; i<value_size; i++) {
+                value |= (uint64_t)data[i];
+                if (i < value_size - 1) {
+                    value <<= 8;
+                }
+            }
+        }
+    }
+
+    return value;
+}
+
 // NOTE: Be careful not to call this after stand alone markers SOI, EOI and TEM.
 // :endianess_dependant
 int jpg_read_marker_segment_length (struct jpg_reader_t *rdr)
 {
-    int length = 0;
-    uint8_t *data = jpg_read_bytes (rdr, 2);
-    if (!rdr->error) {
-        length = ((int)data[0])<<8 | (int)data[1];
-    }
-
-    return length;
+    assert (rdr->endianess == BYTE_READER_BIG_ENDIAN && "Attempting to read JPEG marker as little endian.");
+    return jpg_reader_read_value (rdr, 2);
 }
 
 static inline
@@ -536,6 +569,65 @@ void print_jpeg_structure (char *path)
     }
 }
 
+void print_tiff_6 (struct jpg_reader_t *rdr)
+{
+    uint64_t tiff_data_start = rdr->offset;
+    enum jpg_reader_endianess_t original_endianess = rdr->endianess;
+
+    printf ("Reading TIFF data:\n");
+    uint8_t *byte_order = jpg_read_bytes (rdr, 2);
+    if (memcmp (byte_order, "II", 2) == 0) {
+        printf (" Byte order: II (little endian)\n");
+        rdr->endianess = BYTE_READER_LITTLE_ENDIAN;
+    } else if (memcmp (byte_order, "MM", 2) == 0) {
+        printf (" Byte order: MM (big endian)\n");
+        rdr->endianess = BYTE_READER_BIG_ENDIAN;
+    } else {
+        jpg_error (rdr, "Invalid byte order, expected 'II' or 'MM', got ");
+        str_cat_bytes (&rdr->error_msg, byte_order, 2);
+    }
+
+    uint64_t arbitraryliy_chosen_value = jpg_reader_read_value (rdr, 2);
+    if (arbitraryliy_chosen_value != 42) {
+        jpg_error (rdr, "Expected the arbitrary but carefully chosen number 42, but got %lu.",
+                   arbitraryliy_chosen_value);
+    }
+
+    int ifd_count = 0;
+    uint64_t directory_offset = jpg_reader_read_value (rdr, 4);
+    while (!rdr->error && directory_offset != 0) {
+        jpg_advance_bytes (rdr, directory_offset - (rdr->offset - tiff_data_start));
+        printf (" IFD %d @%lu\n", ifd_count, directory_offset);
+
+        int directory_entry_count = 0;
+        int num_directory_entries = jpg_reader_read_value (rdr, 2);
+        while (!rdr->error && directory_entry_count < num_directory_entries) {
+            directory_entry_count++;
+            printf ("  %d.", directory_entry_count);
+
+            uint64_t tag = jpg_reader_read_value (rdr, 2);
+            printf (" 0x%lX :", tag);
+
+            uint64_t type = jpg_reader_read_value (rdr, 2);
+            printf (" 0x%lX", type);
+
+            uint64_t num_values = jpg_reader_read_value (rdr, 4);
+            printf (" #%lu", num_values);
+
+            uint64_t value_offset = jpg_reader_read_value (rdr, 4);
+            printf (" @%lu", value_offset);
+
+            printf ("\n");
+        }
+
+        directory_offset = jpg_reader_read_value (rdr, 4);
+        ifd_count++;
+    }
+
+    // Restore endianess
+    rdr->endianess = original_endianess;
+}
+
 void print_exif (char *path)
 {
     bool success = true;
@@ -570,14 +662,8 @@ void print_exif (char *path)
 
             uint8_t *exif_id_code = jpg_read_bytes (rdr, 6);
             if (memcmp (exif_id_code, "Exif\0\0", 6) == 0) {
-                int tiff_data_size = 0;
                 printf ("Found Exif APP1 marker segment\n");
-                // TODO: Start the TIFF format reader, and compute
-                // tiff_data_size.
-
-                if (tiff_data_size != marker_segment_length - 8) {
-                    printf (ECMA_YELLOW("warning:") " Exif data doesn't match APP1 marker segment size.\n");
-                }
+                print_tiff_6 (rdr);
             }
         }
 
