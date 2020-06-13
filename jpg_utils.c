@@ -569,6 +569,27 @@ void print_jpeg_structure (char *path)
     }
 }
 
+#define TIFF_TYPE_TABLE \
+    TIFF_TYPE_ROW(NONE,  0) /*non-standard, used to detect errors*/ \
+    TIFF_TYPE_ROW(BYTE,  1)    \
+    TIFF_TYPE_ROW(ASCII, 2)    \
+    TIFF_TYPE_ROW(SHORT, 3)    \
+    TIFF_TYPE_ROW(LONG,  4)    \
+    TIFF_TYPE_ROW(RATIONAL, 5) \
+
+#define TIFF_TYPE_ROW(SYMBOL,VALUE) TIFF_TYPE_ ## SYMBOL = VALUE,
+enum tiff_type_t {
+    TIFF_TYPE_TABLE
+};
+#undef TIFF_TYPE_ROW
+
+#define TIFF_TYPE_ROW(SYMBOL,VALUE) #SYMBOL,
+char *tiff_type_names[] = {
+    TIFF_TYPE_TABLE
+};
+#undef TIFF_TYPE_ROW
+
+
 void print_tiff_6 (struct jpg_reader_t *rdr)
 {
     uint64_t tiff_data_start = rdr->offset;
@@ -609,7 +630,10 @@ void print_tiff_6 (struct jpg_reader_t *rdr)
             printf (" 0x%lX :", tag);
 
             uint64_t type = jpg_reader_read_value (rdr, 2);
-            printf (" 0x%lX", type);
+            if (type > TIFF_TYPE_RATIONAL) {
+                type = TIFF_TYPE_NONE;
+            }
+            printf (" %s (0x%lX)", tiff_type_names[type], type);
 
             uint64_t num_values = jpg_reader_read_value (rdr, 4);
             printf (" #%lu", num_values);
