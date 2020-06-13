@@ -60,7 +60,7 @@ typedef JPG_READER_API_READ_BYTES(jpg_reader_api_read_bytes_t);
     void name(struct jpg_reader_t *rdr, uint64_t length)
 typedef JPG_READER_API_ADVANCE_BYTES(jpg_reader_api_advance_bytes_t);
 
-BINARY_TREE_NEW(jpg_marker_to_str, int, char*, a-b);
+BINARY_TREE_NEW(int_to_str, int, char*, a-b);
 struct jpg_reader_t {
     mem_pool_t pool;
 
@@ -75,7 +75,8 @@ struct jpg_reader_t {
 
     enum jpg_reader_endianess_t endianess;
 
-    struct jpg_marker_to_str_tree_t marker_names;
+    struct int_to_str_tree_t marker_names;
+    struct int_to_str_tree_t tiff_tag_names;
 
     bool error;
     string_t error_msg;
@@ -88,7 +89,8 @@ void jpg_reader_destroy (struct jpg_reader_t *rdr)
 {
     str_free (&rdr->error_msg);
     str_free (&rdr->buff);
-    jpg_marker_to_str_tree_destroy (&rdr->marker_names);
+    int_to_str_tree_destroy (&rdr->marker_names);
+    int_to_str_tree_destroy (&rdr->tiff_tag_names);
 
     if (rdr->file != 0) {
         close (rdr->file);
@@ -96,6 +98,9 @@ void jpg_reader_destroy (struct jpg_reader_t *rdr)
 
     mem_pool_destroy (&rdr->pool);
 }
+
+//////////////////////////////
+// JPEG constants
 
 #define JPG_MARKER_TABLE \
     JPG_MARKER_ROW(ERR,   0x0000) /* Non standard, used to identify errors.*/ \
@@ -168,6 +173,88 @@ enum marker_t {
                                 marker != JPG_MARKER_DAC && \
                                 (marker & 0xFFF0) == JPG_MARKER_SOF0)
 #define JPG_MARKER_RST(marker) ((marker & 0xFFF0) == JPG_MARKER_RST0 && (marker & 0x000F) <= 7)
+
+//////////////////////////////
+// TIFF constants
+
+#define TIFF_TYPE_TABLE \
+    TIFF_TYPE_ROW(NONE,      0) /*non-standard, used to detect errors*/ \
+    TIFF_TYPE_ROW(BYTE,      1)\
+    TIFF_TYPE_ROW(ASCII,     2)\
+    TIFF_TYPE_ROW(SHORT,     3)\
+    TIFF_TYPE_ROW(LONG,      4)\
+    TIFF_TYPE_ROW(RATIONAL,  5)\
+    TIFF_TYPE_ROW(SBYTE,     6)\
+    TIFF_TYPE_ROW(UNDEFINED, 7)\
+    TIFF_TYPE_ROW(SSHORT,    8)\
+    TIFF_TYPE_ROW(SLONG,     9)\
+    TIFF_TYPE_ROW(SRATIONAL,10)\
+    TIFF_TYPE_ROW(FLOAT,    11)\
+    TIFF_TYPE_ROW(DOUBLE,   12)\
+
+#define TIFF_TYPE_ROW(SYMBOL,VALUE) TIFF_TYPE_ ## SYMBOL = VALUE,
+enum tiff_type_t {
+    TIFF_TYPE_TABLE
+};
+#undef TIFF_TYPE_ROW
+
+#define TIFF_TYPE_ROW(SYMBOL,VALUE) #SYMBOL,
+char *tiff_type_names[] = {
+    TIFF_TYPE_TABLE
+};
+#undef TIFF_TYPE_ROW
+
+// NOTE: Count of -1 means 'Any' size, used for null terminated strings.
+// TODO: Currently only contaíns those used by Exif.
+// TODO: Count for StripOffsets and StripByteCounts depends on the image data
+// format. This isn't implemented.
+#define TIFF_TAG_TABLE \
+    TIFF_TAG_ROW(NONE,  0, ARR(), 0) /*non-standard, used to detect errors*/ \
+    TIFF_TAG_ROW(ImageWidth,                  0x100, ARR(SHORT, LONG), 1)    \
+    TIFF_TAG_ROW(ImageLength,                 0x101, ARR(SHORT, LONG), 1)    \
+    TIFF_TAG_ROW(BitsPerSample,               0x102, ARR(SHORT)      , 3)    \
+    TIFF_TAG_ROW(Compression,                 0x103, ARR(SHORT)      , 1)    \
+    TIFF_TAG_ROW(PhotometricInterpretation,   0x106, ARR(SHORT)      , 1)    \
+    TIFF_TAG_ROW(Orientation,                 0x112, ARR(SHORT)      , 1)    \
+    TIFF_TAG_ROW(SamplesPerPixel,             0x115, ARR(SHORT)      , 1)    \
+    TIFF_TAG_ROW(PlanarConfiguration,         0x11C, ARR(SHORT)      , 1)    \
+    TIFF_TAG_ROW(YCbCrSubSampling,            0x212, ARR(SHORT)      , 2)    \
+    TIFF_TAG_ROW(YCbCrPositioning,            0x213, ARR(SHORT)      , 1)    \
+    TIFF_TAG_ROW(XResolution,                 0x11A, ARR(RATIONAL)   , 1)    \
+    TIFF_TAG_ROW(YResolution,                 0x11B, ARR(RATIONAL)   , 1)    \
+    TIFF_TAG_ROW(ResolutionUnit,              0x128, ARR(SHORT)      , 1)    \
+    TIFF_TAG_ROW(StripOffsets,                0x111, ARR(SHORT, LONG),-1)    \
+    TIFF_TAG_ROW(RowsPerStrip,                0x116, ARR(SHORT, LONG), 1)    \
+    TIFF_TAG_ROW(StripByteCounts,             0x117, ARR(SHORT, LONG),-1)    \
+    TIFF_TAG_ROW(JPEGInterchangeFormat,       0x201, ARR(LONG)       , 1)    \
+    TIFF_TAG_ROW(JPEGInterchangeFormatLength, 0x202, ARR(LONG)       , 1)    \
+    TIFF_TAG_ROW(TransferFunction,            0x12D, ARR(SHORT)      , 3*256)\
+    TIFF_TAG_ROW(WhitePoint,                  0x13E, ARR(RATIONAL)   , 2)    \
+    TIFF_TAG_ROW(PrimaryChromaticities,       0x13F, ARR(RATIONAL)   , 6)    \
+    TIFF_TAG_ROW(YCbCrCoefficients,           0x211, ARR(RATIONAL)   , 3)    \
+    TIFF_TAG_ROW(ReferenceBlackWhite,         0x214, ARR(RATIONAL)   , 6)    \
+    TIFF_TAG_ROW(DataTime,                    0x132, ARR(ASCII)      , 20)   \
+    TIFF_TAG_ROW(ImageDescription,            0x10E, ARR(ASCII)      ,-1)    \
+    TIFF_TAG_ROW(Make,                        0x10F, ARR(ASCII)      ,-1)    \
+    TIFF_TAG_ROW(Model,                       0x110, ARR(ASCII)      ,-1)    \
+    TIFF_TAG_ROW(Software,                    0x131, ARR(ASCII)      ,-1)    \
+    TIFF_TAG_ROW(Artist,                      0x13B, ARR(ASCII)      ,-1)    \
+    TIFF_TAG_ROW(Copyright,                  0x8298, ARR(ASCII)      ,-1)    \
+                                                                             \
+    /*These are specific to Exif, but are located in the TIFF IFD*/          \
+    TIFF_TAG_ROW(ExifIFD,                    0x8769, ARR(LONG)       , 1)    \
+    TIFF_TAG_ROW(GPSIFD,                     0x8825, ARR(LONG)       , 1)    \
+    TIFF_TAG_ROW(InteroperabilityIFD,        0xA005, ARR(LONG)       , 1)    \
+
+#define TIFF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) EXIF_TAG_ ## SYMBOL = VALUE,
+enum tiff_tag_t {
+    TIFF_TAG_TABLE
+};
+#undef TIFF_TAG_ROW
+
+//////////////////////////////
+// Exif constants
+
 
 GCC_PRINTF_FORMAT(2, 3)
 void jpg_error (struct jpg_reader_t *rdr, const char *format, ...)
@@ -307,9 +394,15 @@ bool jpg_reader_init (struct jpg_reader_t *rdr, char *path, bool from_file)
     }
 
     if (success) {
-#define JPG_MARKER_ROW(SYMBOL,VALUE) jpg_marker_to_str_tree_insert (&rdr->marker_names, VALUE, #SYMBOL);
+#define JPG_MARKER_ROW(SYMBOL,VALUE) \
+        int_to_str_tree_insert (&rdr->marker_names, VALUE, #SYMBOL);
         JPG_MARKER_TABLE
 #undef JPG_MARKER_ROW
+
+#define TIFF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) \
+        int_to_str_tree_insert (&rdr->tiff_tag_names, VALUE, #SYMBOL);
+        TIFF_TAG_TABLE
+#undef TIFF_TAG_ROW
     }
 
     rdr->error = !success;
@@ -330,7 +423,7 @@ JPG_READER_API_ADVANCE_BYTES(jpg_advance_bytes)
 // them.
 char* marker_name (struct jpg_reader_t *rdr, enum marker_t marker)
 {
-    return jpg_marker_to_str_get (&rdr->marker_names, marker);
+    return int_to_str_get (&rdr->marker_names, marker);
 }
 
 // TODO: Make sure endianness is correct. Either make this function work for
@@ -442,7 +535,7 @@ void print_jpeg_structure (char *path)
         if (marker == JPG_MARKER_APP0) {
             printf ("File seems to be JFIF\n");
         } else if (marker == JPG_MARKER_APP1) {
-            printf ("File seems to be EXIF\n");
+            printf ("File seems to be Exif\n");
         }
         printf ("\n");
 
@@ -569,27 +662,6 @@ void print_jpeg_structure (char *path)
     }
 }
 
-#define TIFF_TYPE_TABLE \
-    TIFF_TYPE_ROW(NONE,  0) /*non-standard, used to detect errors*/ \
-    TIFF_TYPE_ROW(BYTE,  1)    \
-    TIFF_TYPE_ROW(ASCII, 2)    \
-    TIFF_TYPE_ROW(SHORT, 3)    \
-    TIFF_TYPE_ROW(LONG,  4)    \
-    TIFF_TYPE_ROW(RATIONAL, 5) \
-
-#define TIFF_TYPE_ROW(SYMBOL,VALUE) TIFF_TYPE_ ## SYMBOL = VALUE,
-enum tiff_type_t {
-    TIFF_TYPE_TABLE
-};
-#undef TIFF_TYPE_ROW
-
-#define TIFF_TYPE_ROW(SYMBOL,VALUE) #SYMBOL,
-char *tiff_type_names[] = {
-    TIFF_TYPE_TABLE
-};
-#undef TIFF_TYPE_ROW
-
-
 void print_tiff_6 (struct jpg_reader_t *rdr)
 {
     uint64_t tiff_data_start = rdr->offset;
@@ -614,6 +686,7 @@ void print_tiff_6 (struct jpg_reader_t *rdr)
                    arbitraryliy_chosen_value);
     }
 
+    bool print_hex_values = false;
     int ifd_count = 0;
     uint64_t directory_offset = jpg_reader_read_value (rdr, 4);
     while (!rdr->error && directory_offset != 0) {
@@ -627,16 +700,31 @@ void print_tiff_6 (struct jpg_reader_t *rdr)
             printf ("  %d.", directory_entry_count);
 
             uint64_t tag = jpg_reader_read_value (rdr, 2);
-            printf (" 0x%lX :", tag);
+            char* tag_name = int_to_str_get (&rdr->tiff_tag_names, tag);
+            if (tag_name != NULL) {
+                if (print_hex_values) {
+                    printf (" %s (0x%lX) :", tag_name, tag);
+                } else {
+                    printf (" %s :", tag_name);
+                }
+            } else {
+                printf (" (unknown tag) 0x%lX :", tag);
+            }
 
             uint64_t type = jpg_reader_read_value (rdr, 2);
-            if (type > TIFF_TYPE_RATIONAL) {
+            if (type <= TIFF_TYPE_DOUBLE) {
+                if (print_hex_values) {
+                    printf (" %s (0x%lX)", tiff_type_names[type], type);
+                } else {
+                    printf (" %s", tiff_type_names[type]);
+                }
+            } else {
                 type = TIFF_TYPE_NONE;
+                printf (" (unknown type) 0x%lX :", type);
             }
-            printf (" %s (0x%lX)", tiff_type_names[type], type);
 
             uint64_t num_values = jpg_reader_read_value (rdr, 4);
-            printf (" #%lu", num_values);
+            printf (" [%lu]", num_values);
 
             uint64_t value_offset = jpg_reader_read_value (rdr, 4);
             printf (" @%lu", value_offset);
