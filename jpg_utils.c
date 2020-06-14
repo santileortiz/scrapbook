@@ -60,6 +60,10 @@ typedef JPG_READER_API_READ_BYTES(jpg_reader_api_read_bytes_t);
     void name(struct jpg_reader_t *rdr, uint64_t length)
 typedef JPG_READER_API_ADVANCE_BYTES(jpg_reader_api_advance_bytes_t);
 
+#define JPG_READER_API_JUMP_TO(name) \
+    void name(struct jpg_reader_t *rdr, uint64_t offset)
+typedef JPG_READER_API_JUMP_TO(jpg_reader_api_jump_to_t);
+
 BINARY_TREE_NEW(int_to_str, int, char*, a-b);
 struct jpg_reader_t {
     mem_pool_t pool;
@@ -83,6 +87,7 @@ struct jpg_reader_t {
 
     jpg_reader_api_read_bytes_t *read_bytes;
     jpg_reader_api_advance_bytes_t *advance_bytes;
+    jpg_reader_api_jump_to_t *jump_to;
 };
 
 void jpg_reader_destroy (struct jpg_reader_t *rdr)
@@ -178,28 +183,34 @@ enum marker_t {
 // TIFF constants
 
 #define TIFF_TYPE_TABLE \
-    TIFF_TYPE_ROW(NONE,      0) /*non-standard, used to detect errors*/ \
-    TIFF_TYPE_ROW(BYTE,      1)\
-    TIFF_TYPE_ROW(ASCII,     2)\
-    TIFF_TYPE_ROW(SHORT,     3)\
-    TIFF_TYPE_ROW(LONG,      4)\
-    TIFF_TYPE_ROW(RATIONAL,  5)\
-    TIFF_TYPE_ROW(SBYTE,     6)\
-    TIFF_TYPE_ROW(UNDEFINED, 7)\
-    TIFF_TYPE_ROW(SSHORT,    8)\
-    TIFF_TYPE_ROW(SLONG,     9)\
-    TIFF_TYPE_ROW(SRATIONAL,10)\
-    TIFF_TYPE_ROW(FLOAT,    11)\
-    TIFF_TYPE_ROW(DOUBLE,   12)\
+    TIFF_TYPE_ROW(NONE,      0, 0) /*non-standard, used to detect errors*/ \
+    TIFF_TYPE_ROW(BYTE,      1, 1)\
+    TIFF_TYPE_ROW(ASCII,     2, 1)\
+    TIFF_TYPE_ROW(SHORT,     3, 2)\
+    TIFF_TYPE_ROW(LONG,      4, 4)\
+    TIFF_TYPE_ROW(RATIONAL,  5, 8)\
+    TIFF_TYPE_ROW(SBYTE,     6, 1)\
+    TIFF_TYPE_ROW(UNDEFINED, 7, 1)\
+    TIFF_TYPE_ROW(SSHORT,    8, 2)\
+    TIFF_TYPE_ROW(SLONG,     9, 4)\
+    TIFF_TYPE_ROW(SRATIONAL,10, 8)\
+    TIFF_TYPE_ROW(FLOAT,    11, 4)\
+    TIFF_TYPE_ROW(DOUBLE,   12, 8)\
 
-#define TIFF_TYPE_ROW(SYMBOL,VALUE) TIFF_TYPE_ ## SYMBOL = VALUE,
+#define TIFF_TYPE_ROW(SYMBOL,VALUE,BYTES) TIFF_TYPE_ ## SYMBOL = VALUE,
 enum tiff_type_t {
     TIFF_TYPE_TABLE
 };
 #undef TIFF_TYPE_ROW
 
-#define TIFF_TYPE_ROW(SYMBOL,VALUE) #SYMBOL,
+#define TIFF_TYPE_ROW(SYMBOL,VALUE,BYTES) #SYMBOL,
 char *tiff_type_names[] = {
+    TIFF_TYPE_TABLE
+};
+#undef TIFF_TYPE_ROW
+
+#define TIFF_TYPE_ROW(SYMBOL,VALUE,BYTES) BYTES,
+unsigned int tiff_type_sizes[] = {
     TIFF_TYPE_TABLE
 };
 #undef TIFF_TYPE_ROW
@@ -233,7 +244,7 @@ char *tiff_type_names[] = {
     TIFF_TAG_ROW(PrimaryChromaticities,       0x13F, ARR(RATIONAL)   , 6)    \
     TIFF_TAG_ROW(YCbCrCoefficients,           0x211, ARR(RATIONAL)   , 3)    \
     TIFF_TAG_ROW(ReferenceBlackWhite,         0x214, ARR(RATIONAL)   , 6)    \
-    TIFF_TAG_ROW(DataTime,                    0x132, ARR(ASCII)      , 20)   \
+    TIFF_TAG_ROW(DateTime,                    0x132, ARR(ASCII)      , 20)   \
     TIFF_TAG_ROW(ImageDescription,            0x10E, ARR(ASCII)      ,-1)    \
     TIFF_TAG_ROW(Make,                        0x10F, ARR(ASCII)      ,-1)    \
     TIFF_TAG_ROW(Model,                       0x110, ARR(ASCII)      ,-1)    \
@@ -321,6 +332,24 @@ JPG_READER_API_ADVANCE_BYTES(jpg_file_reader_advance_bytes)
     }
 }
 
+JPG_READER_API_JUMP_TO(jpg_file_reader_jump_to)
+{
+    if (rdr->error == true) {
+        return;
+    }
+
+    if (offset > rdr->file_size) {
+        jpg_error (rdr, "Trying to read past EOF");
+        return;
+    }
+
+    if (lseek (rdr->file, offset, SEEK_SET) != -1) {
+        rdr->offset = offset;
+    } else {
+        jpg_error (rdr, "Failed call to lseek(): %s", strerror(errno));
+    }
+}
+
 // -------------
 // Memory reader
 // -------------
@@ -359,6 +388,22 @@ JPG_READER_API_ADVANCE_BYTES(jpg_memory_reader_advance_bytes)
     rdr->pos += length;
     rdr->offset += length;
 }
+
+JPG_READER_API_JUMP_TO(jpg_memory_reader_jump_to)
+{
+    if (rdr->error == true) {
+        return;
+    }
+
+    if (offset > rdr->file_size) {
+        jpg_error (rdr, "Trying to read past EOF");
+        return;
+    }
+
+    rdr->pos = rdr->data + offset;
+    rdr->offset = offset;
+}
+
 ////////////////////////////////
 
 bool jpg_reader_init (struct jpg_reader_t *rdr, char *path, bool from_file)
@@ -384,6 +429,7 @@ bool jpg_reader_init (struct jpg_reader_t *rdr, char *path, bool from_file)
 
         rdr->read_bytes = jpg_file_reader_read_bytes;
         rdr->advance_bytes = jpg_file_reader_advance_bytes;
+        rdr->jump_to = jpg_file_reader_jump_to;
 
     } else {
         rdr->data = (uint8_t*)full_file_read_full (&rdr->pool, path, &rdr->file_size, false);
@@ -391,6 +437,7 @@ bool jpg_reader_init (struct jpg_reader_t *rdr, char *path, bool from_file)
 
         rdr->read_bytes = jpg_memory_reader_read_bytes;
         rdr->advance_bytes = jpg_memory_reader_advance_bytes;
+        rdr->jump_to = jpg_memory_reader_jump_to;
     }
 
     if (success) {
@@ -417,6 +464,11 @@ JPG_READER_API_READ_BYTES(jpg_read_bytes)
 JPG_READER_API_ADVANCE_BYTES(jpg_advance_bytes)
 {
     rdr->advance_bytes(rdr, length);
+}
+
+JPG_READER_API_JUMP_TO(jpg_jump_to)
+{
+    rdr->jump_to(rdr, offset);
 }
 
 // NOTE: This returns constant strings, you shouldn't try writing to or freeing
@@ -461,31 +513,38 @@ void jpg_expect_marker (struct jpg_reader_t *rdr, enum marker_t expected_marker)
 }
 
 // Hopefully in the optimized build these loops are unrolled?
+static inline
+uint64_t byte_array_to_value (uint8_t *bytes, int bytes_len, enum jpg_reader_endianess_t endianess) {
+    assert (bytes_len <= 8);
+
+    uint64_t value = 0;
+    if (endianess == BYTE_READER_LITTLE_ENDIAN) {
+        for (int i=bytes_len-1; i>=0; i--) {
+            value |= (uint64_t)bytes[i];
+            if (i > 0) {
+                value <<= 8;
+            }
+        }
+    } else { //endianess == BYTE_READER_BIG_ENDIAN
+        for (int i=0; i<bytes_len; i++) {
+            value |= (uint64_t)bytes[i];
+            if (i < bytes_len - 1) {
+                value <<= 8;
+            }
+        }
+    }
+
+    return value;
+}
+
 uint64_t jpg_reader_read_value (struct jpg_reader_t *rdr, int value_size)
 {
-    assert (value_size < 8);
+    assert (value_size <= 8);
 
     uint64_t value = 0;
     uint8_t *data = jpg_read_bytes (rdr, value_size);
-    if (rdr->endianess == BYTE_READER_LITTLE_ENDIAN) {
-        if (!rdr->error) {
-            for (int i=value_size-1; i>=0; i--) {
-                value |= (uint64_t)data[i];
-                if (i > 0) {
-                    value <<= 8;
-                }
-            }
-        }
-
-    } else { // if (rdr->endianess == BYTE_READER_BIG_ENDIAN) {
-        if (!rdr->error) {
-            for (int i=0; i<value_size; i++) {
-                value |= (uint64_t)data[i];
-                if (i < value_size - 1) {
-                    value <<= 8;
-                }
-            }
-        }
+    if (!rdr->error) {
+        value = byte_array_to_value (data, value_size, rdr->endianess);
     }
 
     return value;
@@ -662,6 +721,66 @@ void print_jpeg_structure (char *path)
     }
 }
 
+void print_tiff_value_data (struct jpg_reader_t *rdr,
+                            uint8_t *value_data,
+                            enum tiff_type_t type, uint64_t count)
+{
+    uint64_t values_read = 0;
+    printf (" = ");
+
+    if (type == TIFF_TYPE_ASCII) {
+        printf ("\"");
+        while (values_read < count) {
+            printf ("%c", (unsigned int)value_data[0]);
+
+            value_data++;
+            values_read++;
+        }
+        printf ("\"");
+    } else {
+        printf ("{");
+        if (type == TIFF_TYPE_BYTE) {
+            while (values_read < count) {
+                printf ("%u", (unsigned int)value_data[0]);
+
+                value_data++;
+                values_read++;
+                if (values_read < count) printf (", ");
+            }
+
+        } else if (type == TIFF_TYPE_SHORT) {
+            while (values_read < count) {
+                printf ("%lu", byte_array_to_value (value_data, 2, rdr->endianess));
+
+                value_data += 2;
+                values_read++;
+                if (values_read < count) printf (", ");
+            }
+
+        } else if (type == TIFF_TYPE_LONG) {
+            while (values_read < count) {
+                printf ("%lu", byte_array_to_value (value_data, 4, rdr->endianess));
+
+                value_data += 4;
+                values_read++;
+                if (values_read < count) printf (", ");
+            }
+
+        } else if (type == TIFF_TYPE_RATIONAL) {
+            while (values_read < count) {
+                printf ("%lu/%lu",
+                        byte_array_to_value (value_data, 4, rdr->endianess),
+                        byte_array_to_value (value_data+4, 4, rdr->endianess));
+
+                value_data += 8;
+                values_read++;
+                if (values_read < count) printf (", ");
+            }
+        }
+        printf ("}");
+    }
+}
+
 void print_tiff_6 (struct jpg_reader_t *rdr)
 {
     uint64_t tiff_data_start = rdr->offset;
@@ -711,6 +830,7 @@ void print_tiff_6 (struct jpg_reader_t *rdr)
                 printf (" (unknown tag) 0x%lX :", tag);
             }
 
+            // TODO: Check that this tag can be of this type
             uint64_t type = jpg_reader_read_value (rdr, 2);
             if (type <= TIFF_TYPE_DOUBLE) {
                 if (print_hex_values) {
@@ -723,11 +843,34 @@ void print_tiff_6 (struct jpg_reader_t *rdr)
                 printf (" (unknown type) 0x%lX :", type);
             }
 
-            uint64_t num_values = jpg_reader_read_value (rdr, 4);
-            printf (" [%lu]", num_values);
+            // TODO: Check that this tag can have this count
+            uint64_t count = jpg_reader_read_value (rdr, 4);
+            printf (" [%lu]", count);
 
-            uint64_t value_offset = jpg_reader_read_value (rdr, 4);
-            printf (" @%lu", value_offset);
+            if (type != TIFF_TYPE_NONE) {
+                uint64_t byte_count = tiff_type_sizes[type]*count;
+                if (byte_count <= 4) {
+                    uint8_t *value_data = jpg_read_bytes (rdr, 4);
+                    print_tiff_value_data (rdr, value_data, type, count);
+
+                } else {
+                    uint64_t value_offset = jpg_reader_read_value (rdr, 4);
+
+                    uint64_t current_offset = rdr->offset;
+                    jpg_jump_to (rdr, tiff_data_start + value_offset);
+
+                    uint8_t *value_data = jpg_read_bytes (rdr, byte_count);
+                    print_tiff_value_data (rdr, value_data, type, count);
+
+                    jpg_jump_to (rdr, current_offset);
+                }
+
+            } else {
+                uint64_t value_offset = jpg_reader_read_value (rdr, 4);
+                // It's an unknown type, we won't be able to read its value, so
+                // just print what we got as offset.
+                printf (" @%lu", value_offset);
+            }
 
             printf ("\n");
         }
