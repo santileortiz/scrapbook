@@ -79,8 +79,13 @@ struct jpg_reader_t {
 
     enum jpg_reader_endianess_t endianess;
 
+
     struct int_to_str_tree_t marker_names;
     struct int_to_str_tree_t tiff_tag_names;
+
+    uint64_t exif_ifd_offset;
+    uint64_t gps_ifd_offset;
+    uint64_t interoperability_ifd_offset;
 
     bool error;
     string_t error_msg;
@@ -257,7 +262,7 @@ unsigned int tiff_type_sizes[] = {
     TIFF_TAG_ROW(GPSIFD,                     0x8825, ARR(LONG)       , 1)    \
     TIFF_TAG_ROW(InteroperabilityIFD,        0xA005, ARR(LONG)       , 1)    \
 
-#define TIFF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) EXIF_TAG_ ## SYMBOL = VALUE,
+#define TIFF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) TIFF_TAG_ ## SYMBOL = VALUE,
 enum tiff_tag_t {
     TIFF_TAG_TABLE
 };
@@ -781,6 +786,100 @@ void print_tiff_value_data (struct jpg_reader_t *rdr,
     }
 }
 
+// Prints the IFD located ad the current reader's position. Returns the offset
+// of the next IFD
+uint64_t print_tiff_ifd (struct jpg_reader_t *rdr, uint64_t tiff_data_start, bool print_hex_values, bool print_offsets)
+{
+    int directory_entry_count = 0;
+    int num_directory_entries = jpg_reader_read_value (rdr, 2);
+    while (!rdr->error && directory_entry_count < num_directory_entries) {
+        directory_entry_count++;
+        printf ("  %d.", directory_entry_count);
+
+        uint64_t tag = jpg_reader_read_value (rdr, 2);
+        char* tag_name = int_to_str_get (&rdr->tiff_tag_names, tag);
+        if (tag_name != NULL) {
+            if (print_hex_values) {
+                printf (" %s (0x%lX) :", tag_name, tag);
+            } else {
+                printf (" %s :", tag_name);
+            }
+        } else {
+            printf (" (unknown tag) 0x%lX :", tag);
+        }
+
+        // TODO: Check that this tag can be of this type
+        uint64_t type = jpg_reader_read_value (rdr, 2);
+        if (type <= TIFF_TYPE_DOUBLE) {
+            if (print_hex_values) {
+                printf (" %s (0x%lX)", tiff_type_names[type], type);
+            } else {
+                printf (" %s", tiff_type_names[type]);
+            }
+        } else {
+            type = TIFF_TYPE_NONE;
+            printf (" (unknown type) 0x%lX :", type);
+        }
+
+        // TODO: Check that this tag can have this count
+        uint64_t count = jpg_reader_read_value (rdr, 4);
+        printf (" [%lu]", count);
+
+        int64_t value_offset = 0;
+        bool is_value_in_offset = false;
+        if (type != TIFF_TYPE_NONE) {
+            uint64_t byte_count = tiff_type_sizes[type]*count;
+            if (byte_count <= 4) {
+                is_value_in_offset = true;
+                value_offset = rdr->offset - tiff_data_start;
+
+                uint8_t *value_data = jpg_read_bytes (rdr, 4);
+                print_tiff_value_data (rdr, value_data, type, count);
+
+                if (rdr->exif_ifd_offset == 0 && tag == TIFF_TAG_ExifIFD) {
+                    rdr->exif_ifd_offset = byte_array_to_value (value_data, 4, rdr->endianess);
+                } else if (rdr->gps_ifd_offset == 0 && tag == TIFF_TAG_GPSIFD) {
+                    rdr->gps_ifd_offset = byte_array_to_value (value_data, 4, rdr->endianess);
+                } else if (rdr->interoperability_ifd_offset == 0 && tag == TIFF_TAG_InteroperabilityIFD) {
+                    rdr->interoperability_ifd_offset = byte_array_to_value (value_data, 4, rdr->endianess);
+                }
+
+            } else {
+                value_offset = jpg_reader_read_value (rdr, 4);
+
+                uint64_t current_offset = rdr->offset;
+                jpg_jump_to (rdr, tiff_data_start + value_offset);
+
+                uint8_t *value_data = jpg_read_bytes (rdr, byte_count);
+                print_tiff_value_data (rdr, value_data, type, count);
+
+                jpg_jump_to (rdr, current_offset);
+            }
+
+        } else {
+            // The value has an unknown type, we won't be able to read it.
+            // We read the offset anyway, because we need to keep reading
+            // the rest of the values.
+            value_offset = jpg_reader_read_value (rdr, 4);
+        }
+
+        if (print_offsets) {
+            printf (" @%lu", value_offset);
+            if (is_value_in_offset) {
+                // An * besides an offset means the value wasn't in a
+                // different location, instead the value_offset field was
+                // used to store it. This means the offset is really the
+                // offset of the value_offset field of this value.
+                printf ("*");
+            }
+        }
+
+        printf ("\n");
+    }
+
+    return jpg_reader_read_value (rdr, 4);
+}
+
 void print_tiff_6 (struct jpg_reader_t *rdr)
 {
     uint64_t tiff_data_start = rdr->offset;
@@ -806,77 +905,60 @@ void print_tiff_6 (struct jpg_reader_t *rdr)
     }
 
     bool print_hex_values = false;
+    bool print_offsets = true;
     int ifd_count = 0;
-    uint64_t directory_offset = jpg_reader_read_value (rdr, 4);
-    while (!rdr->error && directory_offset != 0) {
-        jpg_advance_bytes (rdr, directory_offset - (rdr->offset - tiff_data_start));
-        printf (" IFD %d @%lu\n", ifd_count, directory_offset);
+    uint64_t next_ifd_offset = jpg_reader_read_value (rdr, 4);
+    while (!rdr->error && next_ifd_offset != 0) {
+        jpg_advance_bytes (rdr, next_ifd_offset - (rdr->offset - tiff_data_start));
 
-        int directory_entry_count = 0;
-        int num_directory_entries = jpg_reader_read_value (rdr, 2);
-        while (!rdr->error && directory_entry_count < num_directory_entries) {
-            directory_entry_count++;
-            printf ("  %d.", directory_entry_count);
+        printf (" IFD %d", ifd_count);
+        if (print_offsets) {
+            printf (" @%lu\n", next_ifd_offset);
+        } else {
+            printf ("\n");
+        }
+        next_ifd_offset = print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets);
+        ifd_count++;
+    }
 
-            uint64_t tag = jpg_reader_read_value (rdr, 2);
-            char* tag_name = int_to_str_get (&rdr->tiff_tag_names, tag);
-            if (tag_name != NULL) {
-                if (print_hex_values) {
-                    printf (" %s (0x%lX) :", tag_name, tag);
-                } else {
-                    printf (" %s :", tag_name);
-                }
-            } else {
-                printf (" (unknown tag) 0x%lX :", tag);
-            }
+    if (rdr->exif_ifd_offset != 0) {
+        printf (" Exif IFD");
+        if (print_offsets) {
+            printf (" @%lu\n", rdr->exif_ifd_offset);
+        } else {
+            printf ("\n");
+        }
+        uint64_t current_offset = rdr->offset;
+        jpg_jump_to (rdr, tiff_data_start + rdr->exif_ifd_offset);
+        print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets);
+        jpg_jump_to (rdr, current_offset);
+    }
 
-            // TODO: Check that this tag can be of this type
-            uint64_t type = jpg_reader_read_value (rdr, 2);
-            if (type <= TIFF_TYPE_DOUBLE) {
-                if (print_hex_values) {
-                    printf (" %s (0x%lX)", tiff_type_names[type], type);
-                } else {
-                    printf (" %s", tiff_type_names[type]);
-                }
-            } else {
-                type = TIFF_TYPE_NONE;
-                printf (" (unknown type) 0x%lX :", type);
-            }
+    if (rdr->gps_ifd_offset != 0) {
+        printf (" GPS IFD");
+        if (print_offsets) {
+            printf (" @%lu\n", rdr->gps_ifd_offset);
+        } else {
+            printf ("\n");
+        }
+        uint64_t current_offset = rdr->offset;
+        jpg_jump_to (rdr, tiff_data_start + rdr->gps_ifd_offset);
+        print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets);
+        jpg_jump_to (rdr, current_offset);
+    }
 
-            // TODO: Check that this tag can have this count
-            uint64_t count = jpg_reader_read_value (rdr, 4);
-            printf (" [%lu]", count);
-
-            if (type != TIFF_TYPE_NONE) {
-                uint64_t byte_count = tiff_type_sizes[type]*count;
-                if (byte_count <= 4) {
-                    uint8_t *value_data = jpg_read_bytes (rdr, 4);
-                    print_tiff_value_data (rdr, value_data, type, count);
-
-                } else {
-                    uint64_t value_offset = jpg_reader_read_value (rdr, 4);
-
-                    uint64_t current_offset = rdr->offset;
-                    jpg_jump_to (rdr, tiff_data_start + value_offset);
-
-                    uint8_t *value_data = jpg_read_bytes (rdr, byte_count);
-                    print_tiff_value_data (rdr, value_data, type, count);
-
-                    jpg_jump_to (rdr, current_offset);
-                }
-
-            } else {
-                uint64_t value_offset = jpg_reader_read_value (rdr, 4);
-                // It's an unknown type, we won't be able to read its value, so
-                // just print what we got as offset.
-                printf (" @%lu", value_offset);
-            }
-
+    if (rdr->interoperability_ifd_offset != 0) {
+        printf (" Interoperability IFD");
+        if (print_offsets) {
+            printf (" @%lu\n", rdr->interoperability_ifd_offset);
+        } else {
             printf ("\n");
         }
 
-        directory_offset = jpg_reader_read_value (rdr, 4);
-        ifd_count++;
+        uint64_t current_offset = rdr->offset;
+        jpg_jump_to (rdr, tiff_data_start + rdr->interoperability_ifd_offset);
+        print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets);
+        jpg_jump_to (rdr, current_offset);
     }
 
     // Restore endianess
