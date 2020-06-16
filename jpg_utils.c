@@ -271,6 +271,102 @@ enum tiff_tag_t {
 //////////////////////////////
 // Exif constants
 
+#define EXIF_TAG_TABLE \
+    EXIF_TAG_ROW(Exifversion,                        0x9000, ARR(UNDEFINED),  4) \
+    EXIF_TAG_ROW(FlashpixVersion,                    0xA000, ARR(UNDEFINED),  4) \
+                                                                                 \
+    EXIF_TAG_ROW(ColorSpace,                         0xA001, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(Gamma,                              0xA500, ARR(RATIONAL),   1) \
+                                                                                 \
+    EXIF_TAG_ROW(ComponentsConfiguration,            0x9101, ARR(UNDEFINED),  4) \
+    EXIF_TAG_ROW(CompressedBitsPerPixel,             0x9102, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(PixelXDimension,                    0xA002, ARR(SHORT,LONG), 1) \
+    EXIF_TAG_ROW(PixelYDimension,                    0xA003, ARR(SHORT,LONG), 1) \
+                                                                                 \
+    EXIF_TAG_ROW(MakerNote,                          0x927C, ARR(UNDEFINED), -1) \
+    EXIF_TAG_ROW(UserComment,                        0x9286, ARR(UNDEFINED), -1) \
+                                                                                 \
+    EXIF_TAG_ROW(RelatedSoundFile,                   0xA004, ARR(ASCII),      13)\
+                                                                                 \
+    EXIF_TAG_ROW(DateTimeOriginal,                   0x9003, ARR(ASCII),      20)\
+    EXIF_TAG_ROW(DateTimeDigitized,                  0x9004, ARR(ASCII),      20)\
+    EXIF_TAG_ROW(OffsetTime,                         0x9010, ARR(ASCII),      7) \
+    EXIF_TAG_ROW(OffsetTimeOriginal,                 0x9011, ARR(ASCII),      7) \
+    EXIF_TAG_ROW(OffsetTimeDigitized,                0x9012, ARR(ASCII),      7) \
+    EXIF_TAG_ROW(SubSecTime,                         0x9290, ARR(ASCII),     -1) \
+    EXIF_TAG_ROW(SubSecTimeOriginal,                 0x9291, ARR(ASCII),     -1) \
+    EXIF_TAG_ROW(SubSecTimeDigitized,                0x9292, ARR(ASCII),     -1) \
+                                                                                 \
+    EXIF_TAG_ROW(ExposureTime,                       0x829A, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(FNumber,                            0x829D, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(ExposureProgram,                    0x8822, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(SpectralSensitivity,                0x8824, ARR(ASCII),     -1) \
+    EXIF_TAG_ROW(PhotographicSensitivity,            0x8827, ARR(SHORT),     -1) \
+    EXIF_TAG_ROW(OECF,                               0x8828, ARR(UNDEFINED), -1) \
+    EXIF_TAG_ROW(SensitivityType,                    0x8830, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(StandardOutputSensitivity,          0x8831, ARR(LONG),       1) \
+    EXIF_TAG_ROW(RecommendedExposureIndex,           0x8832, ARR(LONG),       1) \
+    EXIF_TAG_ROW(ISOSpeed,                           0x8833, ARR(LONG),       1) \
+    EXIF_TAG_ROW(ISOSpeedLatitudeyyy,                0x8834, ARR(LONG),       1) \
+    EXIF_TAG_ROW(ISOSpeedLatitudezzz,                0x8835, ARR(LONG),       1) \
+    EXIF_TAG_ROW(ShutterSpeedValue,                  0x9201, ARR(SRATIONAL),  1) \
+    EXIF_TAG_ROW(ApertureValue,                      0x9202, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(BrightnessValue,                    0x9203, ARR(SRATIONAL),  1) \
+    EXIF_TAG_ROW(ExposureBiasValue,                  0x9204, ARR(SRATIONAL),  1) \
+    EXIF_TAG_ROW(MaxApertureValue,                   0x9205, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(SubjectDistance,                    0x9206, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(MeteringMode,                       0x9207, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(LightSource,                        0x9208, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(Flash,                              0x9209, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(FocalLength,                        0x920A, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(SubjectArea,                        0x9214, ARR(SHORT),     -1 /*2 or 3 or 4*/) \
+    EXIF_TAG_ROW(FlashEnergy,                        0xA20B, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(SpatialFrequencyResponse,           0xA20C, ARR(UNDEFINED), -1) \
+    EXIF_TAG_ROW(FocalPlaneXResolution,              0xA20E, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(FocalPlaneYResolution,              0xA20F, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(FocalPlaneResolutionUnit,           0xA210, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(SubjectLocation,                    0xA214, ARR(SHORT),      2) \
+    EXIF_TAG_ROW(ExposureIndex,                      0xA215, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(SensingMethod,                      0xA217, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(FileSource,                         0xA300, ARR(UNDEFINED),  1) \
+    EXIF_TAG_ROW(SceneType,                          0xA301, ARR(UNDEFINED),  1) \
+    EXIF_TAG_ROW(CFAPattern,                         0xA302, ARR(UNDEFINED), -1) \
+    EXIF_TAG_ROW(CustomRendered,                     0xA401, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(ExposureMode,                       0xA402, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(WhiteBalance,                       0xA403, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(DigitalZoomRatio,                   0xA404, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(FocalLengthIn35mmFilm,              0xA405, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(SceneCaptureType,                   0xA406, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(GainControl,                        0xA407, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(Contrast,                           0xA408, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(Saturation,                         0xA409, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(Sharpness,                          0xA40A, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(DeviceSettingDescription,           0xA40B, ARR(UNDEFINED), -1) \
+    EXIF_TAG_ROW(SubjectDistanceRange,               0xA40C, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(CompositeImage,                     0xA460, ARR(SHORT),      1) \
+    EXIF_TAG_ROW(SourceImageNumberOfCompositeImage,  0xA461, ARR(SHORT),      2) \
+    EXIF_TAG_ROW(SourceExposureTimesOfCompositeImage,0xA462, ARR(UNDEFINED), -1) \
+                                                                                 \
+    EXIF_TAG_ROW(Temperature,                        0x9400, ARR(SRATIONAL),  1) \
+    EXIF_TAG_ROW(Humidity,                           0x9401, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(Pressure,                           0x9402, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(WaterDepth,                         0x9403, ARR(SRATIONAL),  1) \
+    EXIF_TAG_ROW(Acceleration,                       0x9404, ARR(RATIONAL),   1) \
+    EXIF_TAG_ROW(CameraElevationAngle,               0x9405, ARR(SRATIONAL),  1) \
+                                                                                 \
+    EXIF_TAG_ROW(ImageUniqueID,                      0xA420, ARR(ASCII),      33)\
+    EXIF_TAG_ROW(CameraOwnerName,                    0xA430, ARR(ASCII),     -1) \
+    EXIF_TAG_ROW(BodySerialNumber,                   0xA431, ARR(ASCII),     -1) \
+    EXIF_TAG_ROW(LensSpecification,                  0xA432, ARR(RATIONAL),   4) \
+    EXIF_TAG_ROW(LensMake,                           0xA433, ARR(ASCII),     -1) \
+    EXIF_TAG_ROW(LensModel,                          0xA434, ARR(ASCII),     -1) \
+    EXIF_TAG_ROW(LensSerialNumber,                   0xA435, ARR(ASCII),     -1) \
+
+#define EXIF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) EXIF_TAG_ ## SYMBOL = VALUE,
+enum exif_tag_t {
+    EXIF_TAG_TABLE
+};
+#undef EXIF_TAG_ROW
 
 GCC_PRINTF_FORMAT(2, 3)
 void jpg_error (struct jpg_reader_t *rdr, const char *format, ...)
