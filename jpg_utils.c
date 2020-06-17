@@ -271,7 +271,7 @@ enum tiff_tag_t {
 //////////////////////////////
 // Exif constants
 
-#define EXIF_TAG_TABLE \
+#define EXIF_IFD_TAG_TABLE \
     EXIF_TAG_ROW(Exifversion,                        0x9000, ARR(UNDEFINED),  4) \
     EXIF_TAG_ROW(FlashpixVersion,                    0xA000, ARR(UNDEFINED),  4) \
                                                                                  \
@@ -362,9 +362,44 @@ enum tiff_tag_t {
     EXIF_TAG_ROW(LensModel,                          0xA434, ARR(ASCII),     -1) \
     EXIF_TAG_ROW(LensSerialNumber,                   0xA435, ARR(ASCII),     -1) \
 
+#define EXIF_GPS_TAG_TABLE \
+    EXIF_TAG_ROW(GPSVersionID,         0x00, ARR(BYTE),      4) \
+    EXIF_TAG_ROW(GPSLatitudeRef,       0x01, ARR(ASCII),     2) \
+    EXIF_TAG_ROW(GPSLatitude,          0x02, ARR(RATIONAL),  3) \
+    EXIF_TAG_ROW(GPSLongitudeRef,      0x03, ARR(ASCII),     2) \
+    EXIF_TAG_ROW(GPSLongitude,         0x04, ARR(RATIONAL),  3) \
+    EXIF_TAG_ROW(GPSAltitudeRef,       0x05, ARR(BYTE),      1) \
+    EXIF_TAG_ROW(GPSAltitude,          0x06, ARR(RATIONAL),  1) \
+    EXIF_TAG_ROW(GPSTimeStamp,         0x07, ARR(RATIONAL),  3) \
+    EXIF_TAG_ROW(GPSSatellites,        0x08, ARR(ASCII),    -1) \
+    EXIF_TAG_ROW(GPSStatus,            0x09, ARR(ASCII),     2) \
+    EXIF_TAG_ROW(GPSMeasureMode,       0x0A, ARR(ASCII),     2) \
+    EXIF_TAG_ROW(GPSDOP,               0x0B, ARR(RATIONAL),  1) \
+    EXIF_TAG_ROW(GPSSpeedRef,          0x0C, ARR(ASCII),     2) \
+    EXIF_TAG_ROW(GPSSpeed,             0x0D, ARR(RATIONAL),  1) \
+    EXIF_TAG_ROW(GPSTrackRef,          0x0E, ARR(ASCII),     2) \
+    EXIF_TAG_ROW(GPSTrack,             0x0F, ARR(RATIONAL),  1) \
+    EXIF_TAG_ROW(GPSImgDirectionRef,   0x10, ARR(ASCII),     2) \
+    EXIF_TAG_ROW(GPSImgDirection,      0x11, ARR(RATIONAL),  1) \
+    EXIF_TAG_ROW(GPSMapDatum,          0x12, ARR(ASCII),    -1) \
+    EXIF_TAG_ROW(GPSDestLatitudeRef,   0x13, ARR(ASCII),     2) \
+    EXIF_TAG_ROW(GPSDestLatitude,      0x14, ARR(RATIONAL),  3) \
+    EXIF_TAG_ROW(GPSDestLongitudeRef,  0x15, ARR(ASCII),     2) \
+    EXIF_TAG_ROW(GPSDestLongitude,     0x16, ARR(RATIONAL),  3) \
+    EXIF_TAG_ROW(GPSDestBearingRef,    0x17, ARR(ASCII),     2) \
+    EXIF_TAG_ROW(GPSDestBearing,       0x18, ARR(RATIONAL),  1) \
+    EXIF_TAG_ROW(GPSDestDistanceRef,   0x19, ARR(ASCII),     2) \
+    EXIF_TAG_ROW(GPSDestDistance,      0x1A, ARR(RATIONAL),  1) \
+    EXIF_TAG_ROW(GPSProcessingMethod,  0x1B, ARR(UNDEFINED),-1) \
+    EXIF_TAG_ROW(GPSAreaInformation,   0x1C, ARR(UNDEFINED),-1) \
+    EXIF_TAG_ROW(GPSDateStamp,         0x1D, ARR(ASCII),     11)\
+    EXIF_TAG_ROW(GPSDifferential,      0x1E, ARR(SHORT),     1) \
+    EXIF_TAG_ROW(GPSHPositioningError, 0x1F, ARR(RATIONAL),  1) \
+
 #define EXIF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) EXIF_TAG_ ## SYMBOL = VALUE,
 enum exif_tag_t {
     EXIF_TAG_TABLE
+    EXIF_GPS_TAG_TABLE
 };
 #undef EXIF_TAG_ROW
 
