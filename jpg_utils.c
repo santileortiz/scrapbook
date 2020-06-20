@@ -83,6 +83,13 @@ struct jpg_reader_t {
     struct int_to_str_tree_t marker_names;
     struct int_to_str_tree_t tiff_tag_names;
 
+    // TODO: Still not sure if it's a good idea to split these. Did it so we
+    // only lookup the corresponding tags in each IFD. This will then mark as
+    // unknown a GPS IFD tag that shows up in the Exif IFD, and vice versa.
+    // :split_exif_and_gps_tags
+    struct int_to_str_tree_t exif_ifd_tag_names;
+    struct int_to_str_tree_t gps_ifd_tag_names;
+
     uint64_t exif_ifd_offset;
     uint64_t gps_ifd_offset;
     uint64_t interoperability_ifd_offset;
@@ -101,6 +108,8 @@ void jpg_reader_destroy (struct jpg_reader_t *rdr)
     str_free (&rdr->buff);
     int_to_str_tree_destroy (&rdr->marker_names);
     int_to_str_tree_destroy (&rdr->tiff_tag_names);
+    int_to_str_tree_destroy (&rdr->exif_ifd_tag_names);
+    int_to_str_tree_destroy (&rdr->gps_ifd_tag_names);
 
     if (rdr->file != 0) {
         close (rdr->file);
@@ -398,7 +407,7 @@ enum tiff_tag_t {
 
 #define EXIF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) EXIF_TAG_ ## SYMBOL = VALUE,
 enum exif_tag_t {
-    EXIF_TAG_TABLE
+    EXIF_IFD_TAG_TABLE
     EXIF_GPS_TAG_TABLE
 };
 #undef EXIF_TAG_ROW
@@ -586,6 +595,18 @@ bool jpg_reader_init (struct jpg_reader_t *rdr, char *path, bool from_file)
         int_to_str_tree_insert (&rdr->tiff_tag_names, VALUE, #SYMBOL);
         TIFF_TAG_TABLE
 #undef TIFF_TAG_ROW
+
+        // :split_exif_and_gps_tags
+#define EXIF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) \
+        int_to_str_tree_insert (&rdr->exif_ifd_tag_names, VALUE, #SYMBOL);
+        EXIF_IFD_TAG_TABLE
+#undef EXIF_TAG_ROW
+
+        // :split_exif_and_gps_tags
+#define EXIF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) \
+        int_to_str_tree_insert (&rdr->gps_ifd_tag_names, VALUE, #SYMBOL);
+        EXIF_GPS_TAG_TABLE
+#undef EXIF_TAG_ROW
     }
 
     rdr->error = !success;
@@ -873,6 +894,22 @@ void print_tiff_value_data (struct jpg_reader_t *rdr,
             values_read++;
         }
         printf ("\"");
+
+    } else if (type == TIFF_TYPE_UNDEFINED) {
+        while (values_read < count) {
+            if (*value_data >= 0x20 && *value_data < 0x7F) {
+                // Looks like ASCII
+                // TODO: We should try harder in case it's just UTF-8
+                printf (" .%c", (unsigned int)value_data[0]);
+            } else {
+                // Binary data?
+                printf (" %.2X", (unsigned int)value_data[0]);
+            }
+
+            value_data++;
+            values_read++;
+        }
+
     } else {
         printf ("{");
         if (type == TIFF_TYPE_BYTE) {
@@ -919,16 +956,24 @@ void print_tiff_value_data (struct jpg_reader_t *rdr,
 
 // Prints the IFD located ad the current reader's position. Returns the offset
 // of the next IFD
-uint64_t print_tiff_ifd (struct jpg_reader_t *rdr, uint64_t tiff_data_start, bool print_hex_values, bool print_offsets)
+uint64_t print_tiff_ifd (struct jpg_reader_t *rdr,
+                         uint64_t tiff_data_start, bool print_hex_values, bool print_offsets,
+                         struct int_to_str_tree_t *local_tag_names)
 {
+    assert (rdr != NULL);
+
     int directory_entry_count = 0;
     int num_directory_entries = jpg_reader_read_value (rdr, 2);
     while (!rdr->error && directory_entry_count < num_directory_entries) {
         directory_entry_count++;
-        printf ("  %d.", directory_entry_count);
+        printf ("  "); // Indentation
 
         uint64_t tag = jpg_reader_read_value (rdr, 2);
         char* tag_name = int_to_str_get (&rdr->tiff_tag_names, tag);
+        if (tag_name == NULL && local_tag_names != NULL) {
+            tag_name = int_to_str_get (local_tag_names, tag);
+        }
+
         if (tag_name != NULL) {
             if (print_hex_values) {
                 printf (" %s (0x%lX) :", tag_name, tag);
@@ -1048,7 +1093,7 @@ void print_tiff_6 (struct jpg_reader_t *rdr)
         } else {
             printf ("\n");
         }
-        next_ifd_offset = print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets);
+        next_ifd_offset = print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets, NULL);
         ifd_count++;
     }
 
@@ -1061,7 +1106,7 @@ void print_tiff_6 (struct jpg_reader_t *rdr)
         }
         uint64_t current_offset = rdr->offset;
         jpg_jump_to (rdr, tiff_data_start + rdr->exif_ifd_offset);
-        print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets);
+        print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets, &rdr->exif_ifd_tag_names);
         jpg_jump_to (rdr, current_offset);
     }
 
@@ -1074,7 +1119,7 @@ void print_tiff_6 (struct jpg_reader_t *rdr)
         }
         uint64_t current_offset = rdr->offset;
         jpg_jump_to (rdr, tiff_data_start + rdr->gps_ifd_offset);
-        print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets);
+        print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets, &rdr->gps_ifd_tag_names);
         jpg_jump_to (rdr, current_offset);
     }
 
@@ -1088,8 +1133,12 @@ void print_tiff_6 (struct jpg_reader_t *rdr)
 
         uint64_t current_offset = rdr->offset;
         jpg_jump_to (rdr, tiff_data_start + rdr->interoperability_ifd_offset);
-        print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets);
+        print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets, NULL);
         jpg_jump_to (rdr, current_offset);
+
+        // TODO: This is a very small IFD, it will only have a single tag 0x1
+        // with a few possible values. I don't think we need to call the full
+        // tff_ifd processing function.
     }
 
     // Restore endianess
