@@ -81,14 +81,6 @@ struct jpg_reader_t {
 
 
     struct int_to_str_tree_t marker_names;
-    struct int_to_str_tree_t tiff_tag_names;
-
-    // TODO: Still not sure if it's a good idea to split these. Did it so we
-    // only lookup the corresponding tags in each IFD. This will then mark as
-    // unknown a GPS IFD tag that shows up in the Exif IFD, and vice versa.
-    // :split_exif_and_gps_tags
-    struct int_to_str_tree_t exif_ifd_tag_names;
-    struct int_to_str_tree_t gps_ifd_tag_names;
 
     uint64_t exif_ifd_offset;
     uint64_t gps_ifd_offset;
@@ -107,9 +99,6 @@ void jpg_reader_destroy (struct jpg_reader_t *rdr)
     str_free (&rdr->error_msg);
     str_free (&rdr->buff);
     int_to_str_tree_destroy (&rdr->marker_names);
-    int_to_str_tree_destroy (&rdr->tiff_tag_names);
-    int_to_str_tree_destroy (&rdr->exif_ifd_tag_names);
-    int_to_str_tree_destroy (&rdr->gps_ifd_tag_names);
 
     if (rdr->file != 0) {
         close (rdr->file);
@@ -629,23 +618,6 @@ bool jpg_reader_init (struct jpg_reader_t *rdr, char *path, bool from_file)
         int_to_str_tree_insert (&rdr->marker_names, VALUE, #SYMBOL);
         JPG_MARKER_TABLE
 #undef JPG_MARKER_ROW
-
-#define TIFF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) \
-        int_to_str_tree_insert (&rdr->tiff_tag_names, VALUE, #SYMBOL);
-        TIFF_TAG_TABLE
-#undef TIFF_TAG_ROW
-
-        // :split_exif_and_gps_tags
-#define EXIF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) \
-        int_to_str_tree_insert (&rdr->exif_ifd_tag_names, VALUE, #SYMBOL);
-        EXIF_IFD_TAG_TABLE
-#undef EXIF_TAG_ROW
-
-        // :split_exif_and_gps_tags
-#define EXIF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) \
-        int_to_str_tree_insert (&rdr->gps_ifd_tag_names, VALUE, #SYMBOL);
-        EXIF_GPS_TAG_TABLE
-#undef EXIF_TAG_ROW
     }
 
     rdr->error = !success;
@@ -952,80 +924,6 @@ void print_jpeg_structure (char *path)
     }
 }
 
-void print_tiff_value_data (struct jpg_reader_t *rdr,
-                            uint8_t *value_data,
-                            enum tiff_type_t type, uint64_t count)
-{
-    uint64_t values_read = 0;
-    printf (" = ");
-
-    if (type == TIFF_TYPE_ASCII) {
-        printf ("\"");
-        while (values_read < count) {
-            printf ("%c", (unsigned int)value_data[0]);
-
-            value_data++;
-            values_read++;
-        }
-        printf ("\"");
-
-    } else if (type == TIFF_TYPE_UNDEFINED) {
-        while (values_read < count) {
-            // Print binary data as mix of ASCII and HEX.
-            if (*value_data >= 0x20 && *value_data < 0x7F) {
-                printf (" .%c", (unsigned int)value_data[0]);
-            } else {
-                printf (" %.2X", (unsigned int)value_data[0]);
-            }
-
-            value_data++;
-            values_read++;
-        }
-
-    } else {
-        printf ("{");
-        if (type == TIFF_TYPE_BYTE) {
-            while (values_read < count) {
-                printf ("%u", (unsigned int)value_data[0]);
-
-                value_data++;
-                values_read++;
-                if (values_read < count) printf (", ");
-            }
-
-        } else if (type == TIFF_TYPE_SHORT) {
-            while (values_read < count) {
-                printf ("%lu", byte_array_to_value_u64 (value_data, 2, rdr->endianess));
-
-                value_data += 2;
-                values_read++;
-                if (values_read < count) printf (", ");
-            }
-
-        } else if (type == TIFF_TYPE_LONG) {
-            while (values_read < count) {
-                printf ("%lu", byte_array_to_value_u64 (value_data, 4, rdr->endianess));
-
-                value_data += 4;
-                values_read++;
-                if (values_read < count) printf (", ");
-            }
-
-        } else if (type == TIFF_TYPE_RATIONAL) {
-            while (values_read < count) {
-                printf ("%lu/%lu",
-                        byte_array_to_value_u64 (value_data, 4, rdr->endianess),
-                        byte_array_to_value_u64 (value_data+4, 4, rdr->endianess));
-
-                value_data += 8;
-                values_read++;
-                if (values_read < count) printf (", ");
-            }
-        }
-        printf ("}");
-    }
-}
-
 // This function takes a byte array representing a TIFF value and translates it
 // into an array of C values, taking into account the endianess being used.
 //
@@ -1095,15 +993,14 @@ struct tiff_ifd_t* tiff_read_ifd (struct jpg_reader_t *rdr, mem_pool_t *pool,
     mem_pool_marker_t mrkr = mem_pool_begin_temporary_memory (pool);
 
     struct tiff_ifd_t *ifd = mem_pool_push_struct (pool, struct tiff_ifd_t);
-
-    int num_directory_entries = jpg_reader_read_value (rdr, 2);
+    *ifd = ZERO_INIT (struct tiff_ifd_t);
 
     ifd->ifd_offset = rdr->offset - tiff_data_start;
-    ifd->entries_len = num_directory_entries;
-    ifd->entries = mem_pool_push_array (pool, num_directory_entries, struct tiff_entry_t);
+    ifd->entries_len = jpg_reader_read_value (rdr, 2);
+    ifd->entries = mem_pool_push_array (pool, ifd->entries_len, struct tiff_entry_t);
 
     int directory_entry_count = 0;
-    while (!rdr->error && directory_entry_count < num_directory_entries) {
+    while (!rdr->error && directory_entry_count < ifd->entries_len) {
         struct tiff_entry_t *entry = &ifd->entries[directory_entry_count];
         *entry = ZERO_INIT (struct tiff_entry_t);
 
@@ -1113,34 +1010,36 @@ struct tiff_ifd_t* tiff_read_ifd (struct jpg_reader_t *rdr, mem_pool_t *pool,
         entry->type = jpg_reader_read_value (rdr, 2);
         entry->count = jpg_reader_read_value (rdr, 4);
 
-        if (entry->type != TIFF_TYPE_NONE) {
-            uint64_t byte_count = tiff_type_sizes[entry->type]*entry->count;
-            if (byte_count <= 4) {
-                entry->is_value_in_offset = true;
-                entry->value_offset = rdr->offset - tiff_data_start;
+        if (!rdr->error) {
+            if (entry->type != TIFF_TYPE_NONE) {
+                uint64_t byte_count = tiff_type_sizes[entry->type]*entry->count;
+                if (byte_count <= 4) {
+                    entry->is_value_in_offset = true;
+                    entry->value_offset = rdr->offset - tiff_data_start;
 
-                uint8_t *value_data = jpg_read_bytes (rdr, 4);
-                entry->value = tiff_read_value_data (pool, value_data, byte_count,
-                                                     rdr->endianess, entry->type);
+                    uint8_t *value_data = jpg_read_bytes (rdr, 4);
+                    entry->value = tiff_read_value_data (pool, value_data, byte_count,
+                                                         rdr->endianess, entry->type);
+
+                } else {
+                    entry->value_offset = jpg_reader_read_value (rdr, 4);
+
+                    uint64_t current_offset = rdr->offset;
+                    jpg_jump_to (rdr, tiff_data_start + entry->value_offset);
+
+                    uint8_t *value_data = jpg_read_bytes (rdr, byte_count);
+                    entry->value = tiff_read_value_data (pool, value_data, byte_count,
+                                                         rdr->endianess, entry->type);
+
+                    jpg_jump_to (rdr, current_offset);
+                }
 
             } else {
+                // The value has an unknown type, we won't be able to read it.
+                // We read the offset anyway, because we need to keep reading
+                // the rest of the entries.
                 entry->value_offset = jpg_reader_read_value (rdr, 4);
-
-                uint64_t current_offset = rdr->offset;
-                jpg_jump_to (rdr, tiff_data_start + entry->value_offset);
-
-                uint8_t *value_data = jpg_read_bytes (rdr, byte_count);
-                entry->value = tiff_read_value_data (pool, value_data, byte_count,
-                                                     rdr->endianess, entry->type);
-
-                jpg_jump_to (rdr, current_offset);
             }
-
-        } else {
-            // The value has an unknown type, we won't be able to read it.
-            // We read the offset anyway, because we need to keep reading
-            // the rest of the entries.
-            entry->value_offset = jpg_reader_read_value (rdr, 4);
         }
     }
 
@@ -1163,13 +1062,15 @@ struct tiff_ifd_t* read_tiff_6 (struct jpg_reader_t *rdr, mem_pool_t *pool,
     enum jpg_reader_endianess_t original_endianess = rdr->endianess;
 
     uint8_t *byte_order = jpg_read_bytes (rdr, 2);
-    if (memcmp (byte_order, "II", 2) == 0) {
-        rdr->endianess = BYTE_READER_LITTLE_ENDIAN;
-    } else if (memcmp (byte_order, "MM", 2) == 0) {
-        rdr->endianess = BYTE_READER_BIG_ENDIAN;
-    } else {
-        jpg_error (rdr, "Invalid byte order, expected 'II' or 'MM', got ");
-        str_cat_bytes (&rdr->error_msg, byte_order, 2);
+    if (!rdr->error) {
+        if (memcmp (byte_order, "II", 2) == 0) {
+            rdr->endianess = BYTE_READER_LITTLE_ENDIAN;
+        } else if (memcmp (byte_order, "MM", 2) == 0) {
+            rdr->endianess = BYTE_READER_BIG_ENDIAN;
+        } else {
+            jpg_error (rdr, "Invalid byte order, expected 'II' or 'MM', got ");
+            str_cat_bytes (&rdr->error_msg, byte_order, 2);
+        }
     }
 
     if (endianess != NULL) {
@@ -1199,6 +1100,10 @@ struct tiff_ifd_t* read_tiff_6 (struct jpg_reader_t *rdr, mem_pool_t *pool,
 struct tiff_tag_definitions_t {
     struct int_to_str_tree_t tiff_tag_names;
 
+    // TODO: Still not sure if it's a good idea to split these. Did it so we
+    // only lookup the corresponding tags in each IFD. This will then mark as
+    // unknown a GPS IFD tag that shows up in the Exif IFD, and vice versa.
+    // :split_exif_and_gps_tags
     struct int_to_str_tree_t exif_ifd_tag_names;
     struct int_to_str_tree_t gps_ifd_tag_names;
 };
@@ -1312,11 +1217,33 @@ void str_cat_tiff_ifd (string_t *str, struct tiff_ifd_t *curr_ifd,
 
         str_cat_tiff_entry_value (str, entry->value, entry->type, entry->count);
 
+        if (print_offsets) {
+            str_cat_printf (str, " @%lu", entry->value_offset);
+            if (entry->is_value_in_offset) {
+                // An * besides an offset means the value wasn't in a
+                // different location, instead the value_offset field was
+                // used to store it. This means the offset is really the
+                // offset of the value_offset field of this value.
+                str_cat_c (str, "*");
+            }
+        }
+
         str_cat_c (str, "\n");
     }
 }
 
-void str_cat_tiff (string_t *str, struct tiff_ifd_t *tiff, enum jpg_reader_endianess_t *endianess)
+void str_cat_tiff_ifd_offset (string_t *str, bool print_offsets, uint32_t offset)
+{
+    if (print_offsets) {
+        str_cat_printf (str, " @%u\n", offset);
+    } else {
+        str_cat_c (str, "\n");
+    }
+}
+
+void str_cat_tiff (string_t *str, struct tiff_ifd_t *tiff,
+                   enum jpg_reader_endianess_t *endianess, struct int_to_str_tree_t *local_tag_names,
+                   bool print_hex_values, bool print_offsets)
 {
     str_cat_c (str, "TIFF data:\n");
 
@@ -1328,40 +1255,212 @@ void str_cat_tiff (string_t *str, struct tiff_ifd_t *tiff, enum jpg_reader_endia
         }
     }
 
-    bool print_hex_values = false;
-    bool print_offsets = true;
-
-    int ifd_count = 0;
+    uint32_t ifd_count = 0;
     struct tiff_ifd_t *curr_ifd = tiff;
     while (curr_ifd != NULL) {
         str_cat_printf (str, " IFD %d", ifd_count);
-        if (print_offsets) {
-            str_cat_printf (str, " @%lu\n", curr_ifd->ifd_offset);
-        } else {
-            str_cat_c (str, "\n");
-        }
-
-        str_cat_tiff_ifd (str, curr_ifd, print_hex_values, print_offsets, NULL);
+        str_cat_tiff_ifd_offset (str, print_offsets, curr_ifd->ifd_offset);
+        str_cat_tiff_ifd (str, curr_ifd, print_hex_values, print_offsets, local_tag_names);
 
         ifd_count++;
         curr_ifd = curr_ifd->next;
     }
 }
 
+void tiff_data_init ()
+{
+    if (g_tiff_tag_names.tiff_tag_names.num_nodes == 0) {
+#define TIFF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) \
+        int_to_str_tree_insert (&g_tiff_tag_names.tiff_tag_names, VALUE, #SYMBOL);
+        TIFF_TAG_TABLE
+#undef TIFF_TAG_ROW
+
+        // :split_exif_and_gps_tags
+#define EXIF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) \
+        int_to_str_tree_insert (&g_tiff_tag_names.exif_ifd_tag_names, VALUE, #SYMBOL);
+        EXIF_IFD_TAG_TABLE
+#undef EXIF_TAG_ROW
+
+        // :split_exif_and_gps_tags
+#define EXIF_TAG_ROW(SYMBOL,VALUE,TYPE,COUNT) \
+        int_to_str_tree_insert (&g_tiff_tag_names.gps_ifd_tag_names, VALUE, #SYMBOL);
+        EXIF_GPS_TAG_TABLE
+#undef EXIF_TAG_ROW
+    }
+}
+
 void print_tiff_6 (struct jpg_reader_t *rdr)
 {
+    tiff_data_init ();
+
     mem_pool_t pool = {0};
     string_t out = {0};
+
+    bool print_hex_values = false;
+    bool print_offsets = true;
 
     enum jpg_reader_endianess_t endianess = BYTE_READER_BIG_ENDIAN;
     struct tiff_ifd_t *tiff = read_tiff_6 (rdr, &pool, &endianess);
 
     if (!rdr->error) {
-        str_cat_tiff (&out, tiff, &endianess);
+        str_cat_tiff (&out, tiff, &endianess, NULL, print_hex_values, print_offsets);
         printf ("%s", str_data (&out));
     } else {
         printf (ECMA_RED("error:") " %s\n", str_data(&rdr->error_msg));
     }
+
+    mem_pool_destroy (&pool);
+    str_free (&out);
+}
+
+struct tiff_ifd_t* str_cat_tiff_ifd_at_offset (
+    string_t *str,
+    struct jpg_reader_t *rdr,
+    mem_pool_t *pool,
+    char *name, uint32_t tiff_data_start,
+    bool print_offsets, uint32_t offset,
+    bool print_hex_values,
+    struct int_to_str_tree_t *local_tag_names)
+{
+    str_cat_c (str, name);
+    str_cat_tiff_ifd_offset (str, print_offsets, offset);
+
+    uint64_t next_ifd_offset;
+    uint64_t current_offset = rdr->offset;
+    jpg_jump_to (rdr, tiff_data_start + offset);
+    struct tiff_ifd_t *ifd = tiff_read_ifd (rdr, pool, tiff_data_start, &next_ifd_offset);
+    str_cat_tiff_ifd (str, ifd, print_hex_values, print_offsets, local_tag_names);
+    jpg_jump_to (rdr, current_offset);
+
+    return ifd;
+}
+
+void print_exif_as_tiff_data (struct jpg_reader_t *rdr)
+{
+    tiff_data_init ();
+
+    mem_pool_t pool = {0};
+    string_t out = {0};
+
+    bool print_hex_values = false;
+    bool print_offsets = true;
+
+    uint64_t tiff_data_start = rdr->offset;
+    enum jpg_reader_endianess_t endianess = BYTE_READER_BIG_ENDIAN;
+    struct tiff_ifd_t *tiff = read_tiff_6 (rdr, &pool, &endianess);
+
+    str_cat_c (&out, "TIFF data:\n");
+    if (endianess == BYTE_READER_BIG_ENDIAN) {
+        str_cat_c (&out, " Byte order: MM (big endian)\n");
+    } else {
+        str_cat_c (&out, " Byte order: II (little endian)\n");
+    }
+
+    // Lookup for the Exif specific tags.
+    // @performance linear_search.
+    uint32_t exif_ifd_offset = 0;
+    uint32_t gps_ifd_offset = 0;
+    uint32_t interoperability_ifd_offset = 0;
+    {
+        uint32_t ifd_count = 0;
+        struct tiff_ifd_t *curr_ifd = tiff;
+        while (curr_ifd != NULL) {
+            str_cat_printf (&out, " IFD %d", ifd_count);
+            str_cat_tiff_ifd_offset (&out, print_offsets, curr_ifd->ifd_offset);
+            str_cat_tiff_ifd (&out, curr_ifd, print_hex_values, print_offsets, NULL);
+
+            for (uint32_t entry_idx = 0; entry_idx < curr_ifd->entries_len; entry_idx++) {
+                struct tiff_entry_t *entry = &curr_ifd->entries[entry_idx];
+
+                if (entry->tag == TIFF_TAG_ExifIFD) {
+                    exif_ifd_offset = *((uint32_t*)entry->value);
+                } else if (entry->tag == TIFF_TAG_GPSIFD) {
+                    gps_ifd_offset = *((uint32_t*)entry->value);
+                } else if (entry->tag == TIFF_TAG_InteroperabilityIFD) {
+                    interoperability_ifd_offset = *((uint32_t*)entry->value);
+                }
+            }
+
+            ifd_count++;
+            curr_ifd = curr_ifd->next;
+        }
+    }
+
+    struct tiff_entry_t *maker_note = NULL;
+    if (exif_ifd_offset != 0) {
+        struct tiff_ifd_t *exif_ifd =
+            str_cat_tiff_ifd_at_offset (&out, rdr, &pool, " Exif IFD", tiff_data_start,
+                                        print_offsets, exif_ifd_offset, print_hex_values, &g_tiff_tag_names.exif_ifd_tag_names);
+
+        // Lookup the MakerNote tag
+        for (uint32_t entry_idx = 0; entry_idx < exif_ifd->entries_len; entry_idx++) {
+            struct tiff_entry_t *entry = &exif_ifd->entries[entry_idx];
+            if (entry->tag == EXIF_TAG_MakerNote) {
+                maker_note = entry;
+            }
+        }
+    }
+
+    if (gps_ifd_offset != 0) {
+        str_cat_tiff_ifd_at_offset (&out, rdr, &pool, " GPS IFD", tiff_data_start,
+                                    print_offsets, gps_ifd_offset, print_hex_values, &g_tiff_tag_names.gps_ifd_tag_names);
+    }
+
+    if (interoperability_ifd_offset != 0) {
+        str_cat_tiff_ifd_at_offset (&out, rdr, &pool, " Interoperability IFD", tiff_data_start,
+                                    print_offsets, gps_ifd_offset, print_hex_values, NULL);
+    }
+
+    if (maker_note != NULL) {
+        uint64_t current_offset = rdr->offset;
+        jpg_jump_to (rdr, tiff_data_start + maker_note->value_offset);
+
+        char name[10];
+        uint32_t idx = 0;
+        uint8_t *data = NULL;
+        do {
+            data = jpg_read_bytes (rdr, 1);
+            name[idx] = *data;
+            idx++;
+        } while (!rdr->error && *data != '\0' && idx < ARRAY_SIZE(name));
+
+        if (*data == '\0') {
+            str_cat_printf (&out, " MakerNote (%s)\n", name);
+            if (strcmp (name, "Apple iOS") == 0) {
+                // TODO: Parse Apple's MakerNote
+            }
+        }
+
+        jpg_jump_to (rdr, current_offset);
+    }
+
+    if (!rdr->error) {
+        printf ("%s", str_data (&out));
+    } else {
+        printf (ECMA_RED("error:") " %s\n", str_data(&rdr->error_msg));
+    }
+
+    mem_pool_destroy (&pool);
+    str_free (&out);
+}
+
+void print_tiff_value_data (struct jpg_reader_t *rdr,
+                            uint8_t *value_data, uint64_t byte_count,
+                            enum tiff_type_t type, uint64_t count)
+{
+    if (rdr->error || value_data == NULL) {
+        return;
+    }
+
+    // TODO: Is this too slow? maybe create the string_t and pool in the caller
+    // and reuse them on each call.
+    // @performance
+    string_t out = {0};
+    mem_pool_t pool = {0};
+
+    void *value_array = tiff_read_value_data (&pool, value_data, byte_count, rdr->endianess, type);
+    str_cat_tiff_entry_value (&out, value_array, type, count);
+    printf ("%s", str_data(&out));
 
     mem_pool_destroy (&pool);
     str_free (&out);
@@ -1382,7 +1481,7 @@ uint64_t print_tiff_ifd (struct jpg_reader_t *rdr,
         printf ("  "); // Indentation
 
         uint64_t tag = jpg_reader_read_value (rdr, 2);
-        char* tag_name = int_to_str_get (&rdr->tiff_tag_names, tag);
+        char* tag_name = int_to_str_get (&g_tiff_tag_names.tiff_tag_names, tag);
         if (tag_name == NULL && local_tag_names != NULL) {
             tag_name = int_to_str_get (local_tag_names, tag);
         }
@@ -1423,7 +1522,7 @@ uint64_t print_tiff_ifd (struct jpg_reader_t *rdr,
                 value_offset = rdr->offset - tiff_data_start;
 
                 uint8_t *value_data = jpg_read_bytes (rdr, 4);
-                print_tiff_value_data (rdr, value_data, type, count);
+                print_tiff_value_data (rdr, value_data, byte_count, type, count);
 
                 if (rdr->exif_ifd_offset == 0 && tag == TIFF_TAG_ExifIFD) {
                     rdr->exif_ifd_offset = byte_array_to_value_u64 (value_data, 4, rdr->endianess);
@@ -1440,7 +1539,7 @@ uint64_t print_tiff_ifd (struct jpg_reader_t *rdr,
                 jpg_jump_to (rdr, tiff_data_start + value_offset);
 
                 uint8_t *value_data = jpg_read_bytes (rdr, byte_count);
-                print_tiff_value_data (rdr, value_data, type, count);
+                print_tiff_value_data (rdr, value_data, byte_count, type, count);
 
                 jpg_jump_to (rdr, current_offset);
             }
@@ -1471,6 +1570,8 @@ uint64_t print_tiff_ifd (struct jpg_reader_t *rdr,
 
 void print_exif_as_tiff_data_no_ir (struct jpg_reader_t *rdr)
 {
+    tiff_data_init ();
+
     uint64_t tiff_data_start = rdr->offset;
     enum jpg_reader_endianess_t original_endianess = rdr->endianess;
 
@@ -1519,7 +1620,7 @@ void print_exif_as_tiff_data_no_ir (struct jpg_reader_t *rdr)
         }
         uint64_t current_offset = rdr->offset;
         jpg_jump_to (rdr, tiff_data_start + rdr->exif_ifd_offset);
-        print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets, &rdr->exif_ifd_tag_names);
+        print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets, &g_tiff_tag_names.exif_ifd_tag_names);
         jpg_jump_to (rdr, current_offset);
     }
 
@@ -1532,7 +1633,7 @@ void print_exif_as_tiff_data_no_ir (struct jpg_reader_t *rdr)
         }
         uint64_t current_offset = rdr->offset;
         jpg_jump_to (rdr, tiff_data_start + rdr->gps_ifd_offset);
-        print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets, &rdr->gps_ifd_tag_names);
+        print_tiff_ifd (rdr, tiff_data_start, print_hex_values, print_offsets, &g_tiff_tag_names.gps_ifd_tag_names);
         jpg_jump_to (rdr, current_offset);
     }
 
@@ -1596,7 +1697,7 @@ void print_exif (char *path)
 #if 0
                 print_exif_as_tiff_data_no_ir (rdr);
 #else
-                print_tiff_6 (rdr);
+                print_exif_as_tiff_data (rdr);
 #endif
             }
         }
