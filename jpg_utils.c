@@ -1230,6 +1230,8 @@ void str_cat_tiff_ifd (string_t *str, struct tiff_ifd_t *curr_ifd,
 
         str_cat_c (str, "\n");
     }
+
+    str_cat_c (str, "\n");
 }
 
 void str_cat_tiff_ifd_offset (string_t *str, bool print_offsets, uint32_t offset)
@@ -1427,7 +1429,41 @@ void print_exif_as_tiff_data (struct jpg_reader_t *rdr)
         if (*data == '\0') {
             str_cat_printf (&out, " MakerNote (%s)\n", name);
             if (strcmp (name, "Apple iOS") == 0) {
-                // TODO: Parse Apple's MakerNote
+                enum jpg_reader_endianess_t original_endianess = rdr->endianess;
+
+                uint16_t version = jpg_reader_read_value (rdr, 2);
+                if (!rdr->error && version != 1) {
+                    // TODO: Is this really the version?
+                    jpg_error (rdr, "Expected Apple MakerNote version 1, got %d.", version);
+                }
+
+                uint8_t *byte_order = jpg_file_reader_read_bytes (rdr, 2);
+                if (!rdr->error) {
+                    if (memcmp (byte_order, "II", 2) == 0) {
+                        rdr->endianess = BYTE_READER_LITTLE_ENDIAN;
+                    } else if (memcmp (byte_order, "MM", 2) == 0) {
+                        rdr->endianess = BYTE_READER_BIG_ENDIAN;
+                    } else {
+                        jpg_error (rdr, "Invalid byte order, expected 'II' or 'MM', got ");
+                        str_cat_bytes (&rdr->error_msg, byte_order, 2);
+                    }
+                }
+
+                uint64_t next_ifd_offset;
+                struct tiff_ifd_t *ifd = tiff_read_ifd (rdr, &pool, tiff_data_start + maker_note->value_offset, &next_ifd_offset);
+                str_cat_tiff_ifd (&out, ifd, print_hex_values, print_offsets, NULL);
+
+                // TODO: Get a bplist reader and parse the values of tags 0x2
+                // and 0x3.
+                // TODO: Tag 0x8 is acceleration vector according to the internet
+                // As viewed from the front of the phone:
+                // V[0] (X+ is toward the left side)
+                // V[1] (Y+ is toward the bottom)
+                // V[2] (Z+ points into the face of the phone)
+                // TODO: Tag 0x1A looks like an ID of some kind. Photo ID?,
+                // Device ID?.
+
+                rdr->endianess = original_endianess;
             }
         }
 
