@@ -240,7 +240,6 @@ struct tiff_type_SRATIONAL_t {
 // TODO: Count for StripOffsets and StripByteCounts depends on the image data
 // format. This isn't implemented.
 #define TIFF_TAG_TABLE \
-    TIFF_TAG_ROW(NONE,  0, ARR(), 0) /*non-standard, used to detect errors*/ \
     TIFF_TAG_ROW(ImageWidth,                  0x100, ARR(SHORT, LONG), 1)    \
     TIFF_TAG_ROW(ImageLength,                 0x101, ARR(SHORT, LONG), 1)    \
     TIFF_TAG_ROW(BitsPerSample,               0x102, ARR(SHORT)      , 3)    \
@@ -1188,9 +1187,13 @@ void str_cat_tiff_ifd (string_t *str, struct tiff_ifd_t *curr_ifd,
 
         str_cat_c (str, "  "); // Indentation
 
-        char* tag_name = int_to_str_get (&g_tiff_tag_names.tiff_tag_names, entry->tag);
-        if (tag_name == NULL && local_tag_names != NULL) {
+        char* tag_name = NULL;
+        if (local_tag_names != NULL) {
             tag_name = int_to_str_get (local_tag_names, entry->tag);
+        }
+
+        if (tag_name == NULL) {
+            tag_name = int_to_str_get (&g_tiff_tag_names.tiff_tag_names, entry->tag);
         }
 
         if (tag_name != NULL) {
@@ -1199,7 +1202,8 @@ void str_cat_tiff_ifd (string_t *str, struct tiff_ifd_t *curr_ifd,
             } else {
                 str_cat_printf (str, " %s :", tag_name);
             }
-        } else {
+        }
+        else {
             str_cat_printf (str, " (unknown tag) 0x%X :", entry->tag);
         }
 
@@ -1348,69 +1352,76 @@ void print_exif_as_tiff_data (struct jpg_reader_t *rdr)
     bool print_offsets = true;
 
     uint64_t tiff_data_start = rdr->offset;
-    enum jpg_reader_endianess_t endianess = BYTE_READER_BIG_ENDIAN;
-    struct tiff_ifd_t *tiff = read_tiff_6 (rdr, &pool, &endianess);
-
-    str_cat_c (&out, "TIFF data:\n");
-    if (endianess == BYTE_READER_BIG_ENDIAN) {
-        str_cat_c (&out, " Byte order: MM (big endian)\n");
-    } else {
-        str_cat_c (&out, " Byte order: II (little endian)\n");
-    }
-
-    // Lookup for the Exif specific tags.
-    // @performance linear_search.
-    uint32_t exif_ifd_offset = 0;
-    uint32_t gps_ifd_offset = 0;
-    uint32_t interoperability_ifd_offset = 0;
+    struct tiff_entry_t *maker_note = NULL;
     {
-        uint32_t ifd_count = 0;
-        struct tiff_ifd_t *curr_ifd = tiff;
-        while (curr_ifd != NULL) {
-            str_cat_printf (&out, " IFD %d", ifd_count);
-            str_cat_tiff_ifd_offset (&out, print_offsets, curr_ifd->ifd_offset);
-            str_cat_tiff_ifd (&out, curr_ifd, print_hex_values, print_offsets, NULL);
+        enum jpg_reader_endianess_t original_endianess = rdr->endianess;
+        enum jpg_reader_endianess_t tiff_endianess = BYTE_READER_BIG_ENDIAN;
+        struct tiff_ifd_t *tiff = read_tiff_6 (rdr, &pool, &tiff_endianess);
+        rdr->endianess = tiff_endianess;
 
-            for (uint32_t entry_idx = 0; entry_idx < curr_ifd->entries_len; entry_idx++) {
-                struct tiff_entry_t *entry = &curr_ifd->entries[entry_idx];
+        str_cat_c (&out, "TIFF data:\n");
+        if (tiff_endianess == BYTE_READER_BIG_ENDIAN) {
+            str_cat_c (&out, " Byte order: MM (big endian)\n");
+        } else {
+            str_cat_c (&out, " Byte order: II (little endian)\n");
+        }
 
-                if (entry->tag == TIFF_TAG_ExifIFD) {
-                    exif_ifd_offset = *((uint32_t*)entry->value);
-                } else if (entry->tag == TIFF_TAG_GPSIFD) {
-                    gps_ifd_offset = *((uint32_t*)entry->value);
-                } else if (entry->tag == TIFF_TAG_InteroperabilityIFD) {
-                    interoperability_ifd_offset = *((uint32_t*)entry->value);
+        // Lookup for the Exif specific tags.
+        // @performance linear_search.
+        uint32_t exif_ifd_offset = 0;
+        uint32_t gps_ifd_offset = 0;
+        uint32_t interoperability_ifd_offset = 0;
+        {
+            uint32_t ifd_count = 0;
+            struct tiff_ifd_t *curr_ifd = tiff;
+            while (curr_ifd != NULL) {
+                str_cat_printf (&out, " IFD %d", ifd_count);
+                str_cat_tiff_ifd_offset (&out, print_offsets, curr_ifd->ifd_offset);
+                str_cat_tiff_ifd (&out, curr_ifd, print_hex_values, print_offsets, NULL);
+
+                for (uint32_t entry_idx = 0; entry_idx < curr_ifd->entries_len; entry_idx++) {
+                    struct tiff_entry_t *entry = &curr_ifd->entries[entry_idx];
+
+                    if (entry->tag == TIFF_TAG_ExifIFD) {
+                        exif_ifd_offset = *((uint32_t*)entry->value);
+                    } else if (entry->tag == TIFF_TAG_GPSIFD) {
+                        gps_ifd_offset = *((uint32_t*)entry->value);
+                    } else if (entry->tag == TIFF_TAG_InteroperabilityIFD) {
+                        interoperability_ifd_offset = *((uint32_t*)entry->value);
+                    }
+                }
+
+                ifd_count++;
+                curr_ifd = curr_ifd->next;
+            }
+        }
+
+        if (exif_ifd_offset != 0) {
+            struct tiff_ifd_t *exif_ifd =
+                str_cat_tiff_ifd_at_offset (&out, rdr, &pool, " Exif IFD", tiff_data_start,
+                                            print_offsets, exif_ifd_offset, print_hex_values, &g_tiff_tag_names.exif_ifd_tag_names);
+
+            // Lookup the MakerNote tag
+            for (uint32_t entry_idx = 0; entry_idx < exif_ifd->entries_len; entry_idx++) {
+                struct tiff_entry_t *entry = &exif_ifd->entries[entry_idx];
+                if (entry->tag == EXIF_TAG_MakerNote) {
+                    maker_note = entry;
                 }
             }
-
-            ifd_count++;
-            curr_ifd = curr_ifd->next;
         }
-    }
 
-    struct tiff_entry_t *maker_note = NULL;
-    if (exif_ifd_offset != 0) {
-        struct tiff_ifd_t *exif_ifd =
-            str_cat_tiff_ifd_at_offset (&out, rdr, &pool, " Exif IFD", tiff_data_start,
-                                        print_offsets, exif_ifd_offset, print_hex_values, &g_tiff_tag_names.exif_ifd_tag_names);
-
-        // Lookup the MakerNote tag
-        for (uint32_t entry_idx = 0; entry_idx < exif_ifd->entries_len; entry_idx++) {
-            struct tiff_entry_t *entry = &exif_ifd->entries[entry_idx];
-            if (entry->tag == EXIF_TAG_MakerNote) {
-                maker_note = entry;
-            }
+        if (gps_ifd_offset != 0) {
+            str_cat_tiff_ifd_at_offset (&out, rdr, &pool, " GPS IFD", tiff_data_start,
+                                        print_offsets, gps_ifd_offset, print_hex_values, &g_tiff_tag_names.gps_ifd_tag_names);
         }
-    }
 
-    if (gps_ifd_offset != 0) {
-        str_cat_tiff_ifd_at_offset (&out, rdr, &pool, " GPS IFD", tiff_data_start,
-                                    print_offsets, gps_ifd_offset, print_hex_values, &g_tiff_tag_names.gps_ifd_tag_names);
-    }
+        if (interoperability_ifd_offset != 0) {
+            rdr->endianess = tiff_endianess;
+            str_cat_tiff_ifd_at_offset (&out, rdr, &pool, " Interoperability IFD", tiff_data_start,
+                                        print_offsets, gps_ifd_offset, print_hex_values, NULL);
+        }
 
-    if (interoperability_ifd_offset != 0) {
-        str_cat_tiff_ifd_at_offset (&out, rdr, &pool, " Interoperability IFD", tiff_data_start,
-                                    print_offsets, gps_ifd_offset, print_hex_values, NULL);
+        rdr->endianess = original_endianess;
     }
 
     if (maker_note != NULL) {
