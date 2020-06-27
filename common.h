@@ -19,6 +19,7 @@
 #include <dirent.h>
 #include <locale.h>
 #include <float.h>
+#include <limits.h>
 
 #ifdef __cplusplus
 #define ZERO_INIT(type) (type){}

@@ -528,9 +528,128 @@ void find_image_duplicates (struct scrapbook_t *sb, struct string_lst_t *files)
 {
     struct string_lst_t *curr_str = files;
     while (curr_str != NULL) {
-        print_jpeg_structure (str_data(&curr_str->s));
+        mem_pool_t pool_l = {0};
+        sb->processed_files++;
+
+        uint64_t file_len = 0;
+        char *fname = str_data(&curr_str->s);
+        char *file_data = jpg_image_data_read (&pool_l, fname, kilobyte(1), &file_len);
+        sb->total_size += file_len;
+
+        push_file_hash (sb, hash_64 (file_data, file_len), fname);
+
+        mem_pool_destroy (&pool_l);
         curr_str = curr_str->next;
+        cli_status ("Files processed:", sb->processed_files);
     }
+    cli_status_end ();
+
+    printf ("Total files read: %lu\n", sb->processed_files);
+    printf ("Total size read: %lu bytes\n", sb->total_size);
+
+    struct string_bucket_t *tentative_duplicates = NULL;
+    uint32_t num_tentative_non_unique_files = 0;
+    BINARY_TREE_FOR(uint_64_to_str, &sb->hash_to_path, curr_node) {
+        struct string_bucket_t *bucket = curr_node->value;
+        if (bucket->count > 1) {
+            struct string_lst_t *curr_path = bucket->strings;
+            while (curr_path != NULL) {
+                num_tentative_non_unique_files++;
+
+                curr_path = curr_path->next;
+            }
+
+            LINKED_LIST_PUSH (tentative_duplicates, bucket);
+        }
+    }
+    printf ("Tentative non unique file count: %d\n", num_tentative_non_unique_files);
+
+    print_bucket_list_fnames (tentative_duplicates);
+    print_bucket_list_path (tentative_duplicates);
+
+    struct string_bucket_t *exact_duplicates = NULL;
+    uint64_t exact_duplicates_len = 0;
+    struct string_bucket_t *non_duplicates = NULL;
+    uint64_t non_duplicates_len = 0;
+    if (num_tentative_non_unique_files > 0) {
+        printf ("\n");
+        printf ("Executing full comparison\n");
+
+        while (tentative_duplicates != NULL)
+        {
+            struct string_bucket_t *curr_bucket = LINKED_LIST_POP(tentative_duplicates);
+
+            bool all_equal = true;
+
+            struct string_lst_t *curr_str = curr_bucket->strings;
+            while (all_equal && curr_str != NULL && curr_str->next != NULL) {
+                mem_pool_t pool_l = {0};
+                uint64_t f1_len;
+                char *f1 = jpg_image_data_read (&pool_l, str_data(&curr_str->s), -1, &f1_len);
+
+                uint64_t f2_len;
+                char *f2 = jpg_image_data_read (&pool_l, str_data(&curr_str->next->s), -1, &f2_len);
+
+                if (f1_len != f2_len || memcmp (f1, f2, f1_len) != 0) {
+                    all_equal = false;
+                }
+
+                mem_pool_destroy (&pool_l);
+
+                curr_str = curr_str->next;
+            }
+
+            if (all_equal) {
+                exact_duplicates_len += curr_bucket->count;
+                LINKED_LIST_PUSH (exact_duplicates, curr_bucket);
+            } else {
+                non_duplicates_len += curr_bucket->count;
+                LINKED_LIST_PUSH (non_duplicates, curr_bucket);
+            }
+
+            cli_progress_bar (exact_duplicates_len+non_duplicates_len, num_tentative_non_unique_files);
+        }
+        printf ("\n");
+
+        printf ("Exact duplicates: %ld\n", exact_duplicates_len);
+        printf ("Non duplicates: %ld\n", non_duplicates_len);
+
+        if (non_duplicates_len != 0) {
+            // TODO: Correctly handle this case. I think one approach could be
+            // to do a full file comparison between all files in the bucket,
+            // then put the real duplicates in the exact_duplicates bucket list.
+            printf ("  Error: HASH COLLISIONS!!\n");
+        }
+    }
+
+    //if (exact_duplicates_len > 0) {
+    //    struct string_lst_t *files_to_remove = NULL;
+    //    struct string_bucket_t *curr_bucket = exact_duplicates;
+    //    while (curr_bucket != NULL) {
+    //        image_duplicate_relevance_sort (&curr_bucket->strings, curr_bucket->count);
+
+    //        struct string_lst_t *curr_str = curr_bucket->strings->next;
+    //        while (curr_str != NULL) {
+    //            LINKED_LIST_PUSH_NEW (&sb->pool, struct string_lst_t, files_to_remove, new_string);
+    //            str_set(&new_string->s, str_data(&curr_str->s));
+    //            curr_str = curr_str->next;
+    //        }
+
+    //        curr_bucket = curr_bucket->next;
+    //    }
+
+    //    //print_bucket_list_fnames (exact_duplicates);
+    //    //print_bucket_list_path (exact_duplicates);
+
+    //    // This will print a huge rm command that will delete all duplicates.
+    //    printf ("rm ");
+    //    struct string_lst_t *curr_str = files_to_remove;
+    //    while (curr_str != NULL) {
+    //        printf ("'%s' ", str_data(&curr_str->s));
+    //        curr_str = curr_str->next;
+    //    }
+    //    printf ("\n");
+    //}
 }
 
 int main (int argc, char **argv)
@@ -546,6 +665,10 @@ int main (int argc, char **argv)
     } else if ((argument = get_cli_arg_opt ("--find-duplicates-file", argv, argc)) != NULL) {
         struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc-1, argv+1);
         find_file_duplicates (&scrapbook, images);
+
+    } else if ((argument = get_cli_arg_opt ("--find-duplicates-image", argv, argc)) != NULL) {
+        struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc-1, argv+1);
+        find_image_duplicates (&scrapbook, images);
 
     } else {
         printf ("Usage:\nscrapbook [--jpeg-structure <file> | --find-duplicates-file <directory>]\n");

@@ -2,16 +2,18 @@
  * Copiright (C) 2020 Santiago León O.
  */
 
-bool file_read_bytes (int file, uint64_t bytes_to_read, string_t *buffer)
+// NOTE: This expects buffer to already be allocated and of size at least
+// bytes_to_read. If this is not the case, use either file_read_bytes_str() or
+// file_read_bytes_pool().
+bool file_read_bytes (int file, uint64_t bytes_to_read, void *buffer)
 {
-    bool success = true;
+    assert (bytes_to_read <= SSIZE_MAX && "Reading too many bytes, this is implementation defined.");
 
-    str_maybe_grow (buffer, bytes_to_read, false);
-    char *dst = str_data(buffer);
+    bool success = true;
 
     uint64_t bytes_read = 0;
     do {
-        int status = read (file, dst, bytes_to_read-bytes_read);
+        int status = read (file, buffer+bytes_read, bytes_to_read-bytes_read);
         if (status == -1) {
             success = false;
             break;
@@ -20,6 +22,23 @@ bool file_read_bytes (int file, uint64_t bytes_to_read, string_t *buffer)
     } while (bytes_read != bytes_to_read);
 
     return success;
+}
+
+bool file_read_bytes_str (int file, uint64_t bytes_to_read, string_t *buffer)
+{
+    assert (bytes_to_read <= SSIZE_MAX && "Reading too many bytes, this is implementation defined.");
+
+    str_maybe_grow (buffer, bytes_to_read, false);
+    return file_read_bytes (file, bytes_to_read, str_data(buffer));
+}
+
+bool file_read_bytes_pool (mem_pool_t *pool, int file, uint64_t bytes_to_read, void **data)
+{
+    assert (bytes_to_read <= SSIZE_MAX && "Reading too many bytes, this is implementation defined.");
+    assert (data != NULL && "Must provide a pointer to get data read.");
+
+    *data = pom_push_size (pool, bytes_to_read);
+    return file_read_bytes (file, bytes_to_read, *data);
 }
 
 void str_cat_bytes (string_t *str, uint8_t *bytes, uint64_t len)
@@ -476,7 +495,7 @@ JPG_READER_API_READ_BYTES(jpg_file_reader_read_bytes)
     }
 
     uint8_t *data = NULL;
-    if (file_read_bytes (rdr->file, bytes_to_read, &rdr->buff)) {
+    if (file_read_bytes_str (rdr->file, bytes_to_read, &rdr->buff)) {
         data = bin_data(&rdr->buff);
         rdr->offset += bytes_to_read;
     } else {
@@ -921,6 +940,77 @@ void print_jpeg_structure (char *path)
 
         jpg_reader_destroy (rdr);
     }
+}
+
+// NOTE: This supports passing -1 as bytes_to_read to mean 'read all image
+// data'. Using uint64_t for that argument will make it overflow, then we will
+// pass the size of the remaining size to the file reader.
+char* jpg_image_data_read (mem_pool_t *pool, char *fname, uint64_t bytes_to_read, uint64_t *bytes_read)
+{
+    bool success = true;
+
+    struct jpg_reader_t _rdr = {0};
+    struct jpg_reader_t *rdr = &_rdr;
+    jpg_reader_init (rdr, fname, true);
+
+    void *image_data = NULL;
+    if (success) {
+        jpg_expect_marker (rdr, JPG_MARKER_SOI);
+
+        // Frame table-specification and miscellaneous marker segments
+        enum marker_t marker = jpg_read_marker (rdr);
+        {
+            while (is_tables_misc_marker(marker)) {
+                int marker_segment_length = jpg_read_marker_segment_length (rdr);
+                jpg_advance_bytes (rdr, marker_segment_length - 2);
+
+                marker = jpg_read_marker (rdr);
+            }
+        }
+
+        // Frame header
+        if (JPG_MARKER_SOF(marker)) {
+            int marker_segment_length = jpg_read_marker_segment_length (rdr);
+            jpg_advance_bytes (rdr, marker_segment_length - 2);
+        } else {
+            jpg_error (rdr, "Expected SOF marker, got '%s'", marker_name(rdr, marker));
+        }
+
+        // Read Scans
+        marker = jpg_read_marker (rdr);
+        if (!rdr->error && is_scan_start(marker)) {
+            // Skip scan tables/misc marker segments
+            while (is_tables_misc_marker(marker))
+            {
+                int marker_segment_length = jpg_read_marker_segment_length (rdr);
+                jpg_advance_bytes (rdr, marker_segment_length - 2);
+
+                marker = jpg_read_marker (rdr);
+            }
+
+            if (marker == JPG_MARKER_SOS) {
+                int marker_segment_length = jpg_read_marker_segment_length (rdr);
+                jpg_advance_bytes (rdr, marker_segment_length - 2);
+            } else {
+                jpg_error (rdr, "Expected SOS marker, got '%s'", marker_name(rdr, marker));
+            }
+
+            uint64_t effective_bytes_to_read = MIN (bytes_to_read, rdr->file_size - rdr->offset);
+            file_read_bytes_pool (pool, rdr->file, effective_bytes_to_read, &image_data);
+
+            if (!rdr->error && image_data != NULL && bytes_read != NULL) {
+                *bytes_read = effective_bytes_to_read;
+            }
+        }
+
+        if (rdr->error) {
+            printf (ECMA_RED("error:") " %s\n", str_data(&rdr->error_msg));
+        }
+
+        jpg_reader_destroy (rdr);
+    }
+
+    return image_data;
 }
 
 // This function takes a byte array representing a TIFF value and translates it
