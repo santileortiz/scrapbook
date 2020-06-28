@@ -652,6 +652,18 @@ void find_image_duplicates (struct scrapbook_t *sb, struct string_lst_t *files)
     //}
 }
 
+void print_hex_bytes (void *data, uint64_t data_len)
+{
+    for (uint32_t value_idx = 0; value_idx < data_len; value_idx++) {
+        uint8_t byte = ((uint8_t*)data)[value_idx];
+        printf ("%.2X", byte);
+
+        if (value_idx < data_len-1) {
+            printf (" ");
+        }
+    }
+}
+
 int main (int argc, char **argv)
 {
     struct scrapbook_t scrapbook = {0};
@@ -661,6 +673,33 @@ int main (int argc, char **argv)
 
     } else if ((argument = get_cli_arg_opt ("--exif", argv, argc)) != NULL) {
         print_exif (argument);
+
+    } else if ((argument = get_cli_arg_opt ("--image-info", argv, argc)) != NULL) {
+        mem_pool_t pool = {0};
+
+        uint64_t file_len;
+        char *file = full_file_read_full (&pool, argument, &file_len, false);
+        printf ("file hash: ");
+        printf ("%lu\n", hash_64 (file, file_len));
+
+        uint64_t partial_file_len;
+        char *partial_file = partial_file_read (&pool, argument, kilobyte(1), &partial_file_len);
+        printf ("file partial hash: ");
+        printf ("%lu\n", hash_64 (partial_file, partial_file_len));
+
+        uint64_t image_data_len;
+        char *image_data = jpg_image_data_read (&pool, argument, -1, &image_data_len);
+        printf ("image data hash: ");
+        printf ("%lu\n", hash_64 (image_data, image_data_len));
+
+        printf ("image data partial hash: ");
+        printf ("%lu\n", hash_64 (image_data, MIN(kilobyte(5), image_data_len)));
+
+        printf ("image data: ");
+        print_hex_bytes (image_data, 20);
+        printf ("...\n");
+
+        mem_pool_destroy (&pool);
 
     } else if ((argument = get_cli_arg_opt ("--find-duplicates-file", argv, argc)) != NULL) {
         struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc-1, argv+1);
