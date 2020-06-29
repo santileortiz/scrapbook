@@ -1431,7 +1431,7 @@ struct tiff_ifd_t* str_cat_tiff_ifd_at_offset (
     return ifd;
 }
 
-void print_exif_as_tiff_data (struct jpg_reader_t *rdr)
+void print_exif_as_tiff_data_with_ir (struct jpg_reader_t *rdr)
 {
     tiff_data_init ();
 
@@ -1529,43 +1529,61 @@ void print_exif_as_tiff_data (struct jpg_reader_t *rdr)
 
         if (*data == '\0') {
             str_cat_printf (&out, " MakerNote (%s)\n", name);
+            enum jpg_reader_endianess_t original_endianess = rdr->endianess;
+
             if (strcmp (name, "Apple iOS") == 0) {
-                enum jpg_reader_endianess_t original_endianess = rdr->endianess;
-
                 uint16_t version = jpg_reader_read_value (rdr, 2);
-                if (!rdr->error && version != 1) {
-                    // TODO: Is this really the version?
-                    jpg_error (rdr, "Expected Apple MakerNote version 1, got %d.", version);
-                }
-
-                uint8_t *byte_order = jpg_file_reader_read_bytes (rdr, 2);
-                if (!rdr->error) {
-                    if (memcmp (byte_order, "II", 2) == 0) {
-                        rdr->endianess = BYTE_READER_LITTLE_ENDIAN;
-                    } else if (memcmp (byte_order, "MM", 2) == 0) {
-                        rdr->endianess = BYTE_READER_BIG_ENDIAN;
-                    } else {
-                        jpg_error (rdr, "Invalid byte order, expected 'II' or 'MM', got ");
-                        str_cat_bytes (&rdr->error_msg, byte_order, 2);
+                if (!rdr->error && version == 1) {
+                    uint8_t *byte_order = jpg_file_reader_read_bytes (rdr, 2);
+                    if (!rdr->error) {
+                        if (memcmp (byte_order, "II", 2) == 0) {
+                            rdr->endianess = BYTE_READER_LITTLE_ENDIAN;
+                        } else if (memcmp (byte_order, "MM", 2) == 0) {
+                            rdr->endianess = BYTE_READER_BIG_ENDIAN;
+                        } else {
+                            jpg_error (rdr, "Invalid byte order, expected 'II' or 'MM', got ");
+                            str_cat_bytes (&rdr->error_msg, byte_order, 2);
+                        }
                     }
+
+                    uint64_t next_ifd_offset;
+                    struct tiff_ifd_t *ifd = tiff_read_ifd (rdr, &pool, tiff_data_start + maker_note->value_offset, &next_ifd_offset);
+                    str_cat_tiff_ifd (&out, ifd, print_hex_values, print_offsets, NULL);
+
+                    // TODO: Get a bplist reader and parse the values of tags 0x2
+                    // and 0x3.
+                    // TODO: Tag 0x8 is acceleration vector according to the internet
+                    // As viewed from the front of the phone:
+                    // V[0] (X+ is toward the left side)
+                    // V[1] (Y+ is toward the bottom)
+                    // V[2] (Z+ points into the face of the phone)
+                    // TODO: Tag 0x1A looks like an ID of some kind. Photo ID?,
+                    // Device ID?.
+
+                } else {
+                    // TODO: Is this really the version?
+                    //jpg_warn (rdr, "Unrecognized Apple MakerNote version %d.", version);
                 }
 
-                uint64_t next_ifd_offset;
-                struct tiff_ifd_t *ifd = tiff_read_ifd (rdr, &pool, tiff_data_start + maker_note->value_offset, &next_ifd_offset);
-                str_cat_tiff_ifd (&out, ifd, print_hex_values, print_offsets, NULL);
+            } else if (strcmp (name, "Nikon") == 0) {
+                uint8_t *magic = jpg_file_reader_read_bytes (rdr, 4);
+                if (memcmp (magic, "\x02\x11\0\0", 4) == 0) {
+                    enum jpg_reader_endianess_t endianess = BYTE_READER_BIG_ENDIAN;
+                    struct tiff_ifd_t *tiff = read_tiff_6 (rdr, &pool, &endianess);
+                    str_cat_tiff (&out, tiff, &endianess, NULL, print_hex_values, print_offsets);
 
-                // TODO: Get a bplist reader and parse the values of tags 0x2
-                // and 0x3.
-                // TODO: Tag 0x8 is acceleration vector according to the internet
-                // As viewed from the front of the phone:
-                // V[0] (X+ is toward the left side)
-                // V[1] (Y+ is toward the bottom)
-                // V[2] (Z+ points into the face of the phone)
-                // TODO: Tag 0x1A looks like an ID of some kind. Photo ID?,
-                // Device ID?.
-
-                rdr->endianess = original_endianess;
+                } else {
+                    //jpg_warn (rdr, "Unrecognized Nikon MakerNote.");
+                }
             }
+
+            if (rdr->error) {
+                // TODO: If something faíls here, we will stop parsing the full
+                // image. It's possible to recover from a failed attempt at
+                // reading a maker note, we should implement that.
+            }
+
+            rdr->endianess = original_endianess;
         }
 
         jpg_jump_to (rdr, current_offset);
@@ -1796,6 +1814,17 @@ void print_exif_as_tiff_data_no_ir (struct jpg_reader_t *rdr)
     rdr->endianess = original_endianess;
 }
 
+// These two implementations should be interchangeable, which one is
+// faster/better?.
+void print_exif_as_tiff_data (struct jpg_reader_t *rdr)
+{
+#if 0
+                print_exif_as_tiff_data_no_ir (rdr);
+#else
+                print_exif_as_tiff_data_with_ir (rdr);
+#endif
+}
+
 void print_exif (char *path)
 {
     bool success = true;
@@ -1819,43 +1848,55 @@ void print_exif (char *path)
             is_exif = true;
         }
 
-        if (is_jfif || !is_exif) {
-            // Do exhaustive search? Maybe some broken implementation put the
-            // APP1 segment not at the beginning. Looks like the IJG's JPEG
-            // implementation did this for a while [1].
-            //
-            // [1] http://sylvana.net/jpegcrop/exifpatch.html
-        } else {
+        if (is_jfif) {
+            // TODO: Implement JFIF metadata parsing.
+
+        } else if (is_exif) {
+            uint64_t exif_marker_offset = rdr->offset;
             int marker_segment_length = jpg_read_marker_segment_length (rdr);
 
             uint8_t *exif_id_code = jpg_read_bytes (rdr, 6);
             if (memcmp (exif_id_code, "Exif\0\0", 6) == 0) {
                 printf ("Found Exif APP1 marker segment\n");
-#if 0
-                print_exif_as_tiff_data_no_ir (rdr);
-#else
                 print_exif_as_tiff_data (rdr);
-#endif
             }
+
+            // We can't be sure the reading of Exif's TIFF data left rdr at the
+            // end of the APP1 marker.
+            // :resync_to_marker
+            jpg_jump_to (rdr, exif_marker_offset);
+            jpg_advance_bytes (rdr, marker_segment_length - 2);
+
+            marker = jpg_read_marker (rdr);
         }
 
-        //// Ignore the rest of the Table/misc. marker segments
-        //{
-        //    while (is_tables_misc_marker(marker)) {
-        //        int marker_segment_length = jpg_read_marker_segment_length (rdr);
-        //        jpg_advance_bytes (rdr, marker_segment_length - 2);
+        // Look for buggy APP1 "Exif" markers that are not next to SOI. This is
+        // non standard, but maybe a broken implementation did this. Looks like
+        // the IJG's JPEG implementation did this for a while [1].
+        //
+        // [1] http://sylvana.net/jpegcrop/exifpatch.html
+        while (is_tables_misc_marker(marker)) {
+            int marker_segment_length = jpg_read_marker_segment_length (rdr);
 
-        //        marker = jpg_read_marker (rdr);
-        //    }
-        //}
+            if (marker == JPG_MARKER_APP1) {
+                uint64_t app1_marker_offset = rdr->offset;
+                uint8_t *exif_id_code = jpg_read_bytes (rdr, 6);
+                if (memcmp (exif_id_code, "Exif\0\0", 6) == 0) {
+                    printf (ECMA_YELLOW("warning: ") "Found non-standard Exif APP1 marker segment.\n");
+                    if (is_exif) {
+                        printf (ECMA_YELLOW("warning: ") "Found more than one Exif APP1 marker segment.\n");
+                    }
+                    print_exif_as_tiff_data (rdr);
+                }
 
-        //// Frame header
-        //if (JPG_MARKER_SOF(marker)) {
-        //    int marker_segment_length = jpg_read_marker_segment_length (rdr);
-        //    jpg_advance_bytes (rdr, marker_segment_length - 2);
-        //} else {
-        //    jpg_error (rdr, "Expected SOF marker, got '%s'", marker_name(rdr, marker));
-        //} 
+                // :resync_to_marker
+                jpg_jump_to (rdr, app1_marker_offset);
+            }
+
+            jpg_advance_bytes (rdr, marker_segment_length - 2);
+
+            marker = jpg_read_marker (rdr);
+        }
 
         if (rdr->error) {
             printf (ECMA_RED("error:") " %s\n", str_data(&rdr->error_msg));
