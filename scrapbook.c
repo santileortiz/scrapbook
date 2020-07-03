@@ -664,6 +664,22 @@ void print_hex_bytes (void *data, uint64_t data_len)
     }
 }
 
+// Debug procedure to test stuff in all images in a list of file names.
+void for_each_file (struct scrapbook_t *sb, struct string_lst_t *files)
+{
+    struct string_lst_t *curr_str = files;
+    while (curr_str != NULL) {
+        mem_pool_t pool_l = {0};
+        sb->processed_files++;
+
+        char *fname = str_data(&curr_str->s);
+        jpg_image_data_read (&pool_l, fname, kilobyte(1), NULL);
+
+        mem_pool_destroy (&pool_l);
+        curr_str = curr_str->next;
+    }
+}
+
 int main (int argc, char **argv)
 {
     struct scrapbook_t scrapbook = {0};
@@ -700,6 +716,10 @@ int main (int argc, char **argv)
         printf ("...\n");
 
         mem_pool_destroy (&pool);
+
+    } else if ((argument = get_cli_arg_opt ("--foreach-image", argv, argc)) != NULL) {
+        struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc-1, argv+1);
+        for_each_file (&scrapbook, images);
 
     } else if ((argument = get_cli_arg_opt ("--find-duplicates-file", argv, argc)) != NULL) {
         struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc-1, argv+1);

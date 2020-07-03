@@ -942,11 +942,19 @@ void print_jpeg_structure (char *path)
     }
 }
 
+struct jpg_component_specification_t {
+    uint64_t ci;
+    uint64_t hi;
+    uint64_t vi;
+    uint64_t tqi;
+};
+
 // NOTE: This supports passing -1 as bytes_to_read to mean 'read all image
 // data'. Using uint64_t for that argument will make it overflow, then we will
 // pass the size of the remaining size to the file reader.
 char* jpg_image_data_read (mem_pool_t *pool, char *fname, uint64_t bytes_to_read, uint64_t *bytes_read)
 {
+    mem_pool_t pool_l = {0};
     bool success = true;
 
     struct jpg_reader_t _rdr = {0};
@@ -969,38 +977,95 @@ char* jpg_image_data_read (mem_pool_t *pool, char *fname, uint64_t bytes_to_read
         }
 
         // Frame header
+        enum marker_t sof = marker;
+        uint64_t p, y, x, nf;
+        struct jpg_component_specification_t *cmp_params;
         if (JPG_MARKER_SOF(marker)) {
             int marker_segment_length = jpg_read_marker_segment_length (rdr);
-            jpg_advance_bytes (rdr, marker_segment_length - 2);
+            uint64_t marker_end = rdr->offset + marker_segment_length - 2;
+
+            p = jpg_reader_read_value (rdr, 1);
+            x = jpg_reader_read_value (rdr, 2);
+            y = jpg_reader_read_value (rdr, 2);
+            nf = jpg_reader_read_value (rdr, 1);
+
+            cmp_params =
+                mem_pool_push_array (&pool_l, nf, struct jpg_component_specification_t);
+            for (int nf_idx=0; nf_idx < nf; nf_idx++) {
+                cmp_params[nf_idx].ci = jpg_reader_read_value (rdr, 1);
+
+                uint64_t hi_vi = jpg_reader_read_value (rdr, 1);
+                cmp_params[nf_idx].hi = (hi_vi & 0xF0) >> 4;
+                cmp_params[nf_idx].vi = hi_vi & 0xF;
+
+                cmp_params[nf_idx].tqi = jpg_reader_read_value (rdr, 1);
+            }
+
+            //  Stats of 1327 sample files:
+            //
+            //    1 (Ci: 1, Hi: 1, Vi: 1, Tqi: 0) (Ci: 2, Hi: 1, Vi: 1, Tqi: 1) (Ci: 3, Hi: 1, Vi: 1, Tqi: 1)
+            //  538 (Ci: 1, Hi: 2, Vi: 1, Tqi: 0) (Ci: 2, Hi: 1, Vi: 1, Tqi: 1) (Ci: 3, Hi: 1, Vi: 1, Tqi: 1)
+            //  788 (Ci: 1, Hi: 2, Vi: 2, Tqi: 0) (Ci: 2, Hi: 1, Vi: 1, Tqi: 1) (Ci: 3, Hi: 1, Vi: 1, Tqi: 1)
+            //
+            //for (int nf_idx=0; nf_idx < nf; nf_idx++) {
+            //    printf ("(Ci: %lu, Hi: %lu, Vi: %lu, Tqi: %lu)",
+            //            cmp_params[nf_idx].ci, cmp_params[nf_idx].hi, cmp_params[nf_idx].vi, cmp_params[nf_idx].tqi);
+
+            //    if (nf_idx < nf-1) {
+            //        printf (" ");
+            //    }
+            //}
+            //printf ("\n");
+
+            //  Stats of 1327 sample files:
+            //
+            //  1303 SOF0
+            //    24 SOF2 (Most of these seem to come from WhatsApp)
+            //
+            //printf ("%s\n", marker_name(rdr, sof));
+
+            if (marker_end != rdr->offset) {
+                //jpg_warn (rdr, "Padded marker '%s'.", marker_name(rdr, marker));
+                jpg_jump_to (rdr, marker_end);
+            }
+
         } else {
             jpg_error (rdr, "Expected SOF marker, got '%s'", marker_name(rdr, marker));
+            printf ("Error\n");
         }
 
         // Read Scans
-        marker = jpg_read_marker (rdr);
-        if (!rdr->error && is_scan_start(marker)) {
-            // Skip scan tables/misc marker segments
-            while (is_tables_misc_marker(marker))
-            {
-                int marker_segment_length = jpg_read_marker_segment_length (rdr);
-                jpg_advance_bytes (rdr, marker_segment_length - 2);
+        if (sof == JPG_MARKER_SOF0) {
+            marker = jpg_read_marker (rdr);
+            if (!rdr->error && is_scan_start(marker)) {
+                // Skip scan tables/misc marker segments
+                while (is_tables_misc_marker(marker))
+                {
+                    int marker_segment_length = jpg_read_marker_segment_length (rdr);
+                    jpg_advance_bytes (rdr, marker_segment_length - 2);
 
-                marker = jpg_read_marker (rdr);
+                    marker = jpg_read_marker (rdr);
+                }
+
+                if (marker == JPG_MARKER_SOS) {
+                    int marker_segment_length = jpg_read_marker_segment_length (rdr);
+                    jpg_advance_bytes (rdr, marker_segment_length - 2);
+                } else {
+                    jpg_error (rdr, "Expected SOS marker, got '%s'", marker_name(rdr, marker));
+                }
+
+                uint64_t effective_bytes_to_read = MIN (bytes_to_read, rdr->file_size - rdr->offset);
+                file_read_bytes_pool (pool, rdr->file, effective_bytes_to_read, &image_data);
+
+                if (!rdr->error && image_data != NULL && bytes_read != NULL) {
+                    *bytes_read = effective_bytes_to_read;
+                }
             }
 
-            if (marker == JPG_MARKER_SOS) {
-                int marker_segment_length = jpg_read_marker_segment_length (rdr);
-                jpg_advance_bytes (rdr, marker_segment_length - 2);
-            } else {
-                jpg_error (rdr, "Expected SOS marker, got '%s'", marker_name(rdr, marker));
-            }
-
-            uint64_t effective_bytes_to_read = MIN (bytes_to_read, rdr->file_size - rdr->offset);
-            file_read_bytes_pool (pool, rdr->file, effective_bytes_to_read, &image_data);
-
-            if (!rdr->error && image_data != NULL && bytes_read != NULL) {
-                *bytes_read = effective_bytes_to_read;
-            }
+        } else {
+            // TODO: We only support Baseline DCT for now. Looks like we at
+            // least will need to also support Progressive DCT because WhatsApp
+            // uses it.
         }
 
         if (rdr->error) {
