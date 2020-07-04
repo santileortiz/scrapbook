@@ -989,6 +989,8 @@ char* jpg_image_data_read (mem_pool_t *pool, char *fname, uint64_t bytes_to_read
             y = jpg_reader_read_value (rdr, 2);
             nf = jpg_reader_read_value (rdr, 1);
 
+            char hi_max = 0;
+            char vi_max = 0;
             cmp_params =
                 mem_pool_push_array (&pool_l, nf, struct jpg_component_specification_t);
             for (int nf_idx=0; nf_idx < nf; nf_idx++) {
@@ -997,6 +999,9 @@ char* jpg_image_data_read (mem_pool_t *pool, char *fname, uint64_t bytes_to_read
                 uint64_t hi_vi = jpg_reader_read_value (rdr, 1);
                 cmp_params[nf_idx].hi = (hi_vi & 0xF0) >> 4;
                 cmp_params[nf_idx].vi = hi_vi & 0xF;
+
+                hi_max = MAX(hi_max, cmp_params[nf_idx].hi);
+                vi_max = MAX(vi_max, cmp_params[nf_idx].vi);
 
                 cmp_params[nf_idx].tqi = jpg_reader_read_value (rdr, 1);
             }
@@ -1023,6 +1028,19 @@ char* jpg_image_data_read (mem_pool_t *pool, char *fname, uint64_t bytes_to_read
             //    24 SOF2 (Most of these seem to come from WhatsApp)
             //
             //printf ("%s\n", marker_name(rdr, sof));
+
+            if (p == 8) {
+                for (int mcu_idx = 0; mcu_idx < x/hi_max; mcu_idx++) {
+                    for (int c_idx = 0; c_idx < nf; c_idx++) {
+                        struct jpg_component_specification_t *curr_cmp_params = cmp_params+c_idx;
+                        for (int h_idx = 0; h_idx < curr_cmp_params->hi; h_idx++) {
+                            for (int v_idx = 0; v_idx < curr_cmp_params->vi; v_idx++) {
+                                // TODO: Decode data unit (8x8 block).
+                            }
+                        }
+                    }
+                }
+            }
 
             if (marker_end != rdr->offset) {
                 //jpg_warn (rdr, "Padded marker '%s'.", marker_name(rdr, marker));
@@ -1059,6 +1077,8 @@ char* jpg_image_data_read (mem_pool_t *pool, char *fname, uint64_t bytes_to_read
 
                 if (!rdr->error && image_data != NULL && bytes_read != NULL) {
                     *bytes_read = effective_bytes_to_read;
+                    // TODO: Read first row of samples and create a hash from
+                    // the DC component of each 8x8 block.
                 }
             }
 
