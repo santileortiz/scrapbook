@@ -674,7 +674,7 @@ enum marker_t jpg_read_marker (struct jpg_reader_t *rdr)
     if (!rdr->error) {
         if (data[0] == 0xFF &&
             ((data[1] & 0xF0) == 0xC0 || (data[1] & 0xF0) == 0xD0 || (data[1] & 0xF0) == 0xE0 ||
-            data[1] == JPG_MARKER_COM || data[1] == JPG_MARKER_TEM)) {
+            data[1] == (0xFF & JPG_MARKER_COM) || data[1] == (0xFF & JPG_MARKER_TEM))) {
             marker = ((int)data[0])<<8 | (int)data[1];
         } else {
             jpg_error (rdr, "Tried to read invalid marker '");
