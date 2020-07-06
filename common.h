@@ -2724,6 +2724,22 @@ bool dir_exists (char *path)
 // common to have paths that contain () in them. I think a better default is to
 // just assume paths are absolute at this point.
 //:sh_expand_was_a_bad_idea
+bool path_exists_no_sh_expand (char *path)
+{
+    bool retval = true;
+
+    struct stat st;
+    int status;
+    if ((status = stat(path, &st)) == -1) {
+        retval = false;
+        if (errno != ENOENT) {
+            printf ("Error checking existance of %s: %s\n", path, strerror(errno));
+        }
+    }
+    return retval;
+}
+
+//:sh_expand_was_a_bad_idea
 bool dir_exists_no_sh_expand (char *path)
 {
     bool retval = true;

@@ -14,6 +14,7 @@ static void MeowExpandSeed(meow_umm InputLen, void *Input, meow_u8 *SeedResult) 
 #define _GNU_SOURCE // Used to enable strcasestr()
 #define _XOPEN_SOURCE 700 // Required for strptime()
 #include "common.h"
+#include "concatenator.c"
 #include "binary_tree.c"
 #include "scanner.c"
 #include "cli_parser.c"
@@ -376,22 +377,39 @@ void print_bucket_list_path (struct string_bucket_t *bucket_lst)
 }
 
 // Looks up directory names passed as cli arguments and recursiveley collects
-// all image files inside of them.
-struct string_lst_t* collect_jpg_from_cli (mem_pool_t *pool, int argc, char **argv)
+// all image files inside of them. If a file name is passsed, the absolute path
+// to the file is appended to the resulting list.
+struct string_lst_t* collect_jpg_from_cli (mem_pool_t *pool, char **paths, int paths_len)
 {
     struct collect_jpg_cb_clsr_t clsr = {0};
     clsr.pool = pool;
 
-    printf ("Collecting images in:\n");
-    for (int i=1; i<argc; i++) {
-        char *path = abs_path_no_sh_expand (argv[i], NULL);
+    uint64_t file_cnt = 0;
+    printf (ECMA_BOLD("Creating file list\n"));
+    for (int i=0; i<paths_len; i++) {
+        char *path = abs_path_no_sh_expand (paths[i], NULL);
+        printf ("PATH: %s\n", path);
         if (dir_exists_no_sh_expand(path)) {
-            printf ("  %s\n", path);
+            printf ("%s\\**\n", path);
             iterate_dir (path, collect_jpg_cb, &clsr);
             cli_status_end ();
+            file_cnt++;
+
+        } else if (path_exists_no_sh_expand(path)) {
+            printf ("%s\n", path);
+            LINKED_LIST_PUSH_NEW (pool, struct string_lst_t, clsr.files, new_node);
+            str_set (&new_node->s, path);
+            file_cnt++;
+
+        } else {
+            printf ("%s (not found, ignoring)\n", path);
         }
-        free (path);
+
+        if (path != NULL) {
+            free (path);
+        }
     }
+    printf ("Total files: %lu\n", file_cnt);
     printf ("\n");
 
     return clsr.files;
@@ -665,17 +683,17 @@ void print_hex_bytes (void *data, uint64_t data_len)
 }
 
 // Debug procedure to test stuff in all images in a list of file names.
-void for_each_file (struct scrapbook_t *sb, struct string_lst_t *files)
+void testing_function (struct scrapbook_t *sb, struct string_lst_t *files)
 {
     struct string_lst_t *curr_str = files;
     while (curr_str != NULL) {
-        mem_pool_t pool_l = {0};
         sb->processed_files++;
 
+        string_t output = {0};
         char *fname = str_data(&curr_str->s);
-        jpg_image_data_read (&pool_l, fname, kilobyte(1), NULL);
+        cat_jpeg_structure (&output, fname);
+        printf ("%s", str_data(&output));
 
-        mem_pool_destroy (&pool_l);
         curr_str = curr_str->next;
     }
 }
@@ -717,16 +735,16 @@ int main (int argc, char **argv)
 
         mem_pool_destroy (&pool);
 
-    } else if ((argument = get_cli_arg_opt ("--foreach-image", argv, argc)) != NULL) {
-        struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc-1, argv+1);
-        for_each_file (&scrapbook, images);
+    } else if ((argument = get_cli_arg_opt ("--debug", argv, argc)) != NULL) {
+        struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argv+2, argc-2);
+        testing_function (&scrapbook, images);
 
     } else if ((argument = get_cli_arg_opt ("--find-duplicates-file", argv, argc)) != NULL) {
-        struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc-1, argv+1);
+        struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argv+2, argc-2);
         find_file_duplicates (&scrapbook, images);
 
     } else if ((argument = get_cli_arg_opt ("--find-duplicates-image", argv, argc)) != NULL) {
-        struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argc-1, argv+1);
+        struct string_lst_t *images = collect_jpg_from_cli (&scrapbook.pool, argv+2, argc-2);
         find_image_duplicates (&scrapbook, images);
 
     } else {
