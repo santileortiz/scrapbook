@@ -7,7 +7,7 @@
 #define NOT_USED
 #endif
 
-#include "meow_hash_x64_aesni.h"
+#include "lib/meow_hash_x64_aesni.h"
 // We don't use this but it causes a compiler warning.
 static void MeowExpandSeed(meow_umm InputLen, void *Input, meow_u8 *SeedResult) NOT_USED;
 
