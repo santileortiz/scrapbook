@@ -107,6 +107,7 @@ struct jpg_reader_t {
 
     bool error;
     string_t error_msg;
+    string_t warning_msg;
 
     jpg_reader_api_read_bytes_t *read_bytes;
     jpg_reader_api_advance_bytes_t *advance_bytes;
@@ -116,6 +117,7 @@ struct jpg_reader_t {
 void jpg_reader_destroy (struct jpg_reader_t *rdr)
 {
     str_free (&rdr->error_msg);
+    str_free (&rdr->warning_msg);
     str_free (&rdr->buff);
     int_to_str_tree_destroy (&rdr->marker_names);
 
@@ -473,6 +475,42 @@ void jpg_error (struct jpg_reader_t *rdr, const char *format, ...)
     char *str = str_data (&rdr->error_msg);
 
     PRINTF_SET (str, size, format, args);
+}
+
+GCC_PRINTF_FORMAT(2, 3)
+void jpg_warn (struct jpg_reader_t *rdr, const char *format, ...)
+{
+    char *begining = ECMA_YELLOW ("warning: ");
+    int begining_len = strlen(begining);
+
+    PRINTF_INIT (format, size, args);
+
+    size_t original_len = str_len(&rdr->warning_msg);
+    str_maybe_grow (&rdr->warning_msg, original_len + size + begining_len + 1/*line break*/ - 1/*null byte*/, true); 
+    char *str = str_data (&rdr->warning_msg) + original_len;
+    memcpy (str, begining, begining_len);
+    str += begining_len;
+
+    PRINTF_SET (str, size, format, args);
+
+    str[size-1] = '\n';
+    str[size] = '\0';
+}
+
+void str_cat_jpg_messages (string_t *str, struct jpg_reader_t *rdr)
+{
+    if (rdr->error) {
+        str_cat_printf (str, ECMA_RED("error:") " %s\n", str_data(&rdr->error_msg));
+    }
+    str_cat_printf (str, "%s", str_data(&rdr->warning_msg));
+}
+
+void print_jpg_messages (struct jpg_reader_t *rdr)
+{
+    string_t str = {0};
+    str_cat_jpg_messages (&str, rdr);
+    printf ("%s", str_data(&str));
+    str_free (&str);
 }
 
 ////////////////////////////////
@@ -1084,7 +1122,7 @@ void cat_jpeg_structure (string_t *str, char *fname)
         catr_pop_indent (catr);
 
         if (marker_end != rdr->offset) {
-            //jpg_warn (rdr, "Padded marker '%s'.", marker_name(rdr, marker));
+            jpg_warn (rdr, "Padded marker '%s'.", marker_name(rdr, marker));
             jpg_jump_to (rdr, marker_end);
         }
 
@@ -1225,7 +1263,7 @@ void cat_jpeg_structure (string_t *str, char *fname)
                 catr_cat (catr, ")\n");
 
                 if (marker_end != rdr->offset) {
-                    //jpg_warn (rdr, "Padded marker '%s'.", marker_name(rdr, marker));
+                    jpg_warn (rdr, "Padded marker '%s'.", marker_name(rdr, marker));
                     jpg_jump_to (rdr, marker_end);
                 }
 
@@ -1283,7 +1321,7 @@ void cat_jpeg_structure (string_t *str, char *fname)
         catr_cat (catr, "Al: %u\n", al);
 
         if (marker_end != rdr->offset) {
-            //jpg_warn (rdr, "Padded marker '%s'.", marker_name(rdr, marker));
+            jpg_warn (rdr, "Padded marker '%s'.", marker_name(rdr, marker));
             jpg_jump_to (rdr, marker_end);
         }
 
@@ -1315,12 +1353,11 @@ void cat_jpeg_structure (string_t *str, char *fname)
         }
     }
 
-    if (rdr->error) {
-        str_cat_printf (str, ECMA_RED("error:") " %s\n", str_data(&rdr->error_msg));
-    } else {
+    if (!rdr->error) {
         str_cat_catr (str, catr);
     }
 
+    str_cat_jpg_messages (str, rdr);
     jpg_reader_destroy (rdr);
 }
 
@@ -1903,7 +1940,7 @@ void print_exif_as_tiff_data_with_ir (struct jpg_reader_t *rdr)
 
                 } else {
                     // TODO: Is this really the version?
-                    //jpg_warn (rdr, "Unrecognized Apple MakerNote version %d.", version);
+                    jpg_warn (rdr, "Unrecognized Apple MakerNote version %d.", version);
                 }
 
             } else if (strcmp (name, "Nikon") == 0) {
@@ -1914,7 +1951,7 @@ void print_exif_as_tiff_data_with_ir (struct jpg_reader_t *rdr)
                     str_cat_tiff (&out, tiff, &endianess, NULL, print_hex_values, print_offsets);
 
                 } else {
-                    //jpg_warn (rdr, "Unrecognized Nikon MakerNote.");
+                    jpg_warn (rdr, "Unrecognized Nikon MakerNote.");
                 }
             }
 
@@ -1932,9 +1969,8 @@ void print_exif_as_tiff_data_with_ir (struct jpg_reader_t *rdr)
 
     if (!rdr->error) {
         printf ("%s", str_data (&out));
-    } else {
-        printf (ECMA_RED("error:") " %s\n", str_data(&rdr->error_msg));
     }
+    print_jpg_messages (rdr);
 
     mem_pool_destroy (&pool);
     str_free (&out);
@@ -2223,9 +2259,9 @@ void print_exif (char *path)
                 uint64_t app1_marker_offset = rdr->offset;
                 uint8_t *exif_id_code = jpg_read_bytes (rdr, 6);
                 if (memcmp (exif_id_code, "Exif\0\0", 6) == 0) {
-                    printf (ECMA_YELLOW("warning: ") "Found non-standard Exif APP1 marker segment.\n");
+                    jpg_warn (rdr, "Found non-standard Exif APP1 marker segment.\n");
                     if (is_exif) {
-                        printf (ECMA_YELLOW("warning: ") "Found more than one Exif APP1 marker segment.\n");
+                        jpg_warn (rdr, "Found more than one Exif APP1 marker segment.\n");
                     }
                     print_exif_as_tiff_data (rdr);
                 }
@@ -2239,10 +2275,7 @@ void print_exif (char *path)
             marker = jpg_read_marker (rdr);
         }
 
-        if (rdr->error) {
-            printf (ECMA_RED("error:") " %s\n", str_data(&rdr->error_msg));
-        }
-
+        print_jpg_messages (rdr);
         jpg_reader_destroy (rdr);
     }
 }
