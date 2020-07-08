@@ -5,6 +5,37 @@
 #define DEFAULT_INITIAL_SIZE kilobyte(150)
 #define DEFAULT_INDENT_SIZE 4
 
+// The implementation of str_cat() does the following:
+//
+//  1. Allocate a new string of the new required size.
+//  2. Copy the old value of the string into the new allocated array.
+//  3. Write the data to be concatenated.
+//
+// To keep the implementation simple and understandable, we don't try to grow
+// the underlying array to double the size. The only case in which an allocation
+// is avoided is when the string is still small enough and we are using the
+// small string optimized implementation.
+//
+// Concatenating strings is a very common thing we want to do. For example when
+// creating the output of a CLI command or when creating configuration or data
+// storage files. Using str_cat() can become O(n^2) in the worst case. This API
+// is a way of performing this common string manipulation, but avoiding all the
+// unnecessary copies on each call to catr_cat().
+//
+// The way to do this is by storing strings as a linked list of pointers to
+// character arrays. Then the user calls a function that computes the total
+// size, creates the memory and writes all the data into it.
+//
+// The point of this API is to be fast, so we try to make as few copies of the
+// passed strings as possible. If a copy of the passed string is required the
+// *_dup() set of functions should be used. This way the code will explicitly
+// show when a copy is being created.
+
+// Cases where we append a sequence of very small strings will be a very bad for
+// this implementation.
+// TODO: Don't create a full catr_string_t node for small strings to prevent a
+// huge memory overhead.
+
 struct catr_string_t {
     char *s;
     uint64_t len;
@@ -198,9 +229,10 @@ void catr_cat (struct concatenator_t *catr, char *format, ...)
     LINKED_LIST_APPEND(catr->strings, new_string);
 }
 
-void str_cat_catr (string_t *str, struct concatenator_t *catr)
+// NOTE: This doesn't include the terminating NULL byte.
+static inline
+uint64_t catr_compute_len (struct concatenator_t *catr)
 {
-    // Compute total size
     uint64_t total_len = 0; // Doesn't count the terminating null byte.
     struct catr_string_t *curr_string = catr->strings;
     while (curr_string != NULL) {
@@ -209,13 +241,16 @@ void str_cat_catr (string_t *str, struct concatenator_t *catr)
         curr_string = curr_string->next;
     }
 
-    // Grow the passed string_t
-    uint32_t original_len = str_len(str);
-    str_maybe_grow (str, original_len + total_len, true);
+    return total_len;
+}
 
-    // Write result
-    char *dst = str_data(str) + original_len;
-    curr_string = catr->strings;
+// NOTE: _dst_ MUST be of size at least catr_compute_len(_catr_) + 1
+// TODO: Maybe receive an optional _len_ argument and check that _len_>0. If
+// this isn't true we can either assert or just write until the buffer is full?.
+static inline
+void catr_write (struct concatenator_t *catr, char *dst)
+{
+    struct catr_string_t *curr_string = catr->strings;
     while (curr_string != NULL) {
         // TODO: What would happen if someone does this?
         //
@@ -235,4 +270,15 @@ void str_cat_catr (string_t *str, struct concatenator_t *catr)
         curr_string = curr_string->next;
     }
     *dst = '\0';
+}
+
+void str_cat_catr (string_t *str, struct concatenator_t *catr)
+{
+    uint64_t total_len = catr_compute_len (catr);
+    
+    uint32_t original_len = str_len(str);
+    str_maybe_grow (str, original_len + total_len, true);
+
+    char *dst = str_data(str) + original_len;
+    catr_write (catr, dst);
 }

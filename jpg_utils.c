@@ -59,11 +59,22 @@ void str_cat_bytes (string_t *str, uint8_t *bytes, uint64_t len)
 
 }
 
+static inline
 uint8_t* bin_data (string_t *str)
 {
     return (uint8_t*)str_data(str);
 }
 
+// TODO: Abstract out this binary reader into struct binary_reader_t, maybe
+// binary_scanner_t?, not sure how to call the variables I like rdr and scnr
+// too. rdr is shorter?, should I rename scanner_t to text_reader_t?, then use
+// brdr and rdr?... not 100% sure yet. This probably should be in common.h.
+//
+// TODO: Add an API to pop/push the state of the reader. It's very common to
+// have different file types within other types, for example TIFF files (Exif
+// data) inside JPEG, or nested TIFF data with MakerNotes. These nested sections
+// may have different endianess so we want to easily save and then restore the
+// reader's state.
 struct jpg_reader_t;
 
 enum jpg_reader_endianess_t {
@@ -2249,7 +2260,7 @@ void print_exif (char *path)
 
         // Look for buggy APP1 "Exif" markers that are not next to SOI. This is
         // non standard, but maybe a broken implementation did this. Looks like
-        // the IJG's JPEG implementation did this for a while [1].
+        // IJG's JPEG implementation did this for a while [1].
         //
         // [1] http://sylvana.net/jpegcrop/exifpatch.html
         while (is_tables_misc_marker(marker)) {
