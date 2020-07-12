@@ -994,11 +994,17 @@ void print_jpeg_structure (char *path)
     }
 }
 
-struct jpg_component_specification_t {
+struct jpg_frame_component_spec_t {
     uint64_t ci;
     uint64_t hi;
     uint64_t vi;
     uint64_t tqi;
+};
+
+struct jpg_scan_component_spec_t {
+    uint8_t csj;
+    uint8_t tdj;
+    uint8_t taj;
 };
 
 struct jpg_huffman_table_t {
@@ -1013,16 +1019,81 @@ struct jpg_huffman_table_t {
     // Generated data
     uint8_t *huffsize;
     uint16_t *huffcode;
+    int32_t maxcode[16];
+    int32_t mincode[16];
+    int32_t valptr[16];
 };
 
 struct jpg_decoder_t {
     mem_pool_t pool;
 
-    struct jpg_component_specification_t *frame_components;
+    struct jpg_frame_component_spec_t *frame_components;
+    struct jpg_scan_component_spec_t scan_components[4];
 
     struct jpg_huffman_table_t dc_dht[4];
     struct jpg_huffman_table_t ac_dht[4];
+
+    uint8_t byte;
+    uint16_t bit_cnt;
+    uint16_t code_buffer;
 };
+
+void jpg_next_bit (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg)
+{
+    // TODO: I think we can read 64 bits to make things faster, or read much
+    // more into memory through the reader?. Maybe make the reader load by
+    // chunks, and make the chunk size be a value that can be set dynamically. I
+    // like this idea... because then the reader API doesn't need the file and
+    // memory versions of calls, and we can switch from one to the other one
+    // during a read!!!
+    if (jpg->bit_cnt == 0) {
+        jpg->byte = jpg_reader_read_value_u8 (rdr);
+        jpg->bit_cnt = 8;
+
+        if (jpg->byte == 0xFF) {
+            uint8_t byte2 = jpg_reader_read_value_u8 (rdr);
+            if (byte2 != 0) {
+                if (byte2 == (0xFF | JPG_MARKER_DNL)) {
+                    // TODO: Process DNL marker, this is supposed to terminate
+                    // the scan.
+                } else {
+                    jpg_error (rdr, "Only DNL marker expected in image data stream, got 0xFF%02X.", byte2);
+                }
+            }
+        }
+
+        if ((jpg->code_buffer & 16) == 0) {
+            jpg->code_buffer <<= 1;
+            jpg->code_buffer |= (jpg->byte >> 7);
+            jpg->byte <<= 1;
+        } else {
+            jpg_error (rdr, "Tried to read a huffman code larger than 16 bits, data stream is corrupt.");
+        }
+    }
+}
+
+uint8_t jpg_huffman_decode (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg, struct jpg_huffman_table_t *dht)
+{
+    int i=0;
+    do {
+        jpg_next_bit (rdr, jpg);
+        i++;
+    } while (!rdr->error && jpg->code_buffer > dht->maxcode[i]);
+
+    uint8_t value = dht->huffval[dht->valptr[i] + jpg->code_buffer - dht->mincode[i]];
+    jpg->code_buffer = 0;
+    return value;
+}
+
+uint8_t jpg_decode_dc (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg, struct jpg_huffman_table_t *dht)
+{
+    return 0;
+}
+
+uint8_t jpg_decode_ac (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg, struct jpg_huffman_table_t *dht)
+{
+    return 0;
+}
 
 // This new jpeg decoder function actually tries to decode the image data
 // stream, as opposed to print_jpeg_structure() which just prints the overall
@@ -1076,7 +1147,6 @@ void cat_jpeg_structure (string_t *str, char *fname)
     char hi_max = 0;
     char vi_max = 0;
     uint64_t p, y, x, nf;
-    struct jpg_component_specification_t *cmp_params;
     if (JPG_MARKER_SOF(marker)) {
         //  Stats of 1327 sample files:
         //
@@ -1102,19 +1172,20 @@ void cat_jpeg_structure (string_t *str, char *fname)
         catr_cat (catr, "Y: %lu\n", y);
         catr_cat (catr, "Nf: %lu\n", nf);
 
-        cmp_params =
-            mem_pool_push_array (pool, nf, struct jpg_component_specification_t);
+        jpg->frame_components =
+            mem_pool_push_array (pool, nf, struct jpg_frame_component_spec_t);
+        struct jpg_frame_component_spec_t *frame_components = jpg->frame_components;
         for (int nf_idx=0; nf_idx < nf; nf_idx++) {
-            cmp_params[nf_idx].ci = jpg_reader_read_value (rdr, 1);
+            frame_components[nf_idx].ci = jpg_reader_read_value (rdr, 1);
 
             uint64_t hi_vi = jpg_reader_read_value (rdr, 1);
-            cmp_params[nf_idx].hi = hi_vi >> 4;
-            cmp_params[nf_idx].vi = hi_vi & 0xF;
+            frame_components[nf_idx].hi = hi_vi >> 4;
+            frame_components[nf_idx].vi = hi_vi & 0xF;
 
-            hi_max = MAX(hi_max, cmp_params[nf_idx].hi);
-            vi_max = MAX(vi_max, cmp_params[nf_idx].vi);
+            hi_max = MAX(hi_max, frame_components[nf_idx].hi);
+            vi_max = MAX(vi_max, frame_components[nf_idx].vi);
 
-            cmp_params[nf_idx].tqi = jpg_reader_read_value (rdr, 1);
+            frame_components[nf_idx].tqi = jpg_reader_read_value (rdr, 1);
         }
 
         // Output scan's component parameters
@@ -1128,7 +1199,7 @@ void cat_jpeg_structure (string_t *str, char *fname)
 
         for (int nf_idx=0; nf_idx < nf; nf_idx++) {
             catr_cat (catr, "(Ci: %lu, Hi: %lu, Vi: %lu, Tqi: %lu)\n",
-                    cmp_params[nf_idx].ci, cmp_params[nf_idx].hi, cmp_params[nf_idx].vi, cmp_params[nf_idx].tqi);
+                    frame_components[nf_idx].ci, frame_components[nf_idx].hi, frame_components[nf_idx].vi, frame_components[nf_idx].tqi);
         }
         catr_pop_indent (catr);
 
@@ -1233,6 +1304,19 @@ void cat_jpeg_structure (string_t *str, char *fname)
                             } while (dht->huffsize[k] != si);
                         }
                     }
+
+                    // Decoder_tables
+                    int j = 0;
+                    for (int i=0; i<16; i++) {
+                        if (dht->bits[i] == 0) {
+                            dht->maxcode[i] = -1;
+                        } else {
+                            dht->valptr[i] = j;
+                            dht->mincode[i] = dht->huffcode[j];
+                            j += dht->bits[i];
+                            dht->maxcode[i] = dht->huffcode[j-1];
+                        }
+                    }
                 }
 
                 // Concatenate the read data.
@@ -1273,6 +1357,31 @@ void cat_jpeg_structure (string_t *str, char *fname)
                 }
                 catr_cat (catr, ")\n");
 
+                catr_cat (catr, "MAXCODE:  (");
+                for (int i=0; i<16; i++) {
+                    if (dht->maxcode[i] == -1) {
+                        catr_cat (catr, "    -1");
+                    } else {
+                        catr_cat (catr, "0x%04X", dht->maxcode[i]);
+                    }
+                    if (i < 16-1) catr_cat (catr, ", ");
+                }
+                catr_cat (catr, ")\n");
+
+                catr_cat (catr, "MINCODE:  (");
+                for (int i=0; i<16; i++) {
+                    catr_cat (catr, "0x%04X", dht->mincode[i]);
+                    if (i < 16-1) catr_cat (catr, ", ");
+                }
+                catr_cat (catr, ")\n");
+
+                catr_cat (catr, "VALPTR:   (");
+                for (int i=0; i<16; i++) {
+                    catr_cat (catr, "%d", dht->valptr[i]);
+                    if (i < 16-1) catr_cat (catr, ", ");
+                }
+                catr_cat (catr, ")\n");
+
                 if (marker_end != rdr->offset) {
                     jpg_warn (rdr, "Padded marker '%s'.", marker_name(rdr, marker));
                     jpg_jump_to (rdr, marker_end);
@@ -1293,30 +1402,22 @@ void cat_jpeg_structure (string_t *str, char *fname)
     }
 
     // Scan header.
+    uint16_t ls;
+    uint8_t ns, ss, se, ah, al;
     if (!rdr->error && marker == JPG_MARKER_SOS) {
-        catr_cat (catr, "SOS\n");
-        catr_push_indent (catr);
-
-        uint16_t ls;
-        uint8_t ns, ss, se, ah, al;
-
         ls = jpg_read_marker_segment_length (rdr);
         uint64_t marker_end = rdr->offset - 2/*bytes of read segment length*/ + ls;
 
         ns = jpg_reader_read_value (rdr, 1);
 
-        catr_cat (catr, "Ls: %u\n", ls);
-        catr_cat (catr, "Ns: %u\n", ns);
-
         for (int ns_idx=0; ns_idx < ns; ns_idx++) {
-            uint8_t csj, tdj, taj;
-            csj = jpg_reader_read_value_u8 (rdr);
+            struct jpg_scan_component_spec_t *scan_component = &jpg->scan_components[ns_idx];
+
+            scan_component->csj = jpg_reader_read_value_u8 (rdr);
 
             uint8_t tdj_taj = jpg_reader_read_value_u8 (rdr);
-            tdj = tdj_taj >> 4;
-            taj = tdj_taj & 0xF;
-
-            catr_cat (catr, "(Csj: %u, Tdj: %u, Taj: %u)\n", csj, tdj, taj);
+            scan_component->tdj = tdj_taj >> 4;
+            scan_component->taj = tdj_taj & 0xF;
         }
 
         ss = jpg_reader_read_value_u8 (rdr);
@@ -1325,6 +1426,18 @@ void cat_jpeg_structure (string_t *str, char *fname)
         uint8_t ah_al = jpg_reader_read_value_u8 (rdr);
         ah = ah_al >> 4;
         al = ah_al & 0xF;
+
+        // Write scan header data
+        catr_cat (catr, "SOS\n");
+        catr_push_indent (catr);
+
+        catr_cat (catr, "Ls: %u\n", ls);
+        catr_cat (catr, "Ns: %u\n", ns);
+
+        for (int ns_idx=0; ns_idx < ns; ns_idx++) {
+            struct jpg_scan_component_spec_t *scan_component = &jpg->scan_components[ns_idx];
+            catr_cat (catr, "(Csj: %u, Tdj: %u, Taj: %u)\n", scan_component->csj, scan_component->tdj, scan_component->taj);
+        }
 
         catr_cat (catr, "Ss: %u\n", ss);
         catr_cat (catr, "Se: %u\n", se);
@@ -1348,19 +1461,35 @@ void cat_jpeg_structure (string_t *str, char *fname)
     // need to also support Progressive DCT because WhatsApp and GIMP use it by
     // default.
     if (!rdr->error && sof == JPG_MARKER_SOF0) {
-        // TODO: Read first row of samples and create a hash from
-        // the DC component of each 8x8 block.
         if (p == 8) {
             for (int mcu_idx = 0; mcu_idx < x/hi_max; mcu_idx++) {
-                for (int c_idx = 0; c_idx < nf; c_idx++) {
-                    struct jpg_component_specification_t *curr_cmp_params = cmp_params+c_idx;
-                    for (int h_idx = 0; h_idx < curr_cmp_params->hi; h_idx++) {
-                        for (int v_idx = 0; v_idx < curr_cmp_params->vi; v_idx++) {
-                            // TODO: Decode data unit (8x8 block).
+                for (int c_idx = 0; c_idx < ns; c_idx++) {
+                    struct jpg_frame_component_spec_t *frame_component = jpg->frame_components+c_idx;
+                    struct jpg_scan_component_spec_t *scan_component = jpg->scan_components+c_idx;
+
+                    if (scan_component->csj == frame_component->ci) {
+                        for (int h_idx = 0; h_idx < frame_component->hi; h_idx++) {
+                            for (int v_idx = 0; v_idx < frame_component->vi; v_idx++) {
+                                uint8_t dc = jpg_decode_dc (rdr, jpg, jpg->dc_dht+scan_component->tdj);
+                                catr_cat (catr, "0x%02X ", dc);
+
+                                uint8_t ac = 0;
+                                do {
+                                    ac = jpg_decode_ac (rdr, jpg, jpg->ac_dht+scan_component->taj);
+                                } while (ac != 0 /* End of block */);
+                            }
                         }
+
+                    } else {
+                        jpg_error (rdr, "Mapping between frame and scan component specifications is not 1:1. This is not implemented yet.");
                     }
                 }
+
+                catr_cat (catr, "\n");
             }
+
+        } else {
+            jpg_error (rdr, "Only precision equal to 8 is supported, got '%ld'", p);
         }
     }
 
