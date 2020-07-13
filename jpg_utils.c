@@ -1240,168 +1240,172 @@ void cat_jpeg_structure (string_t *str, char *fname)
                 uint16_t lh = jpg_read_marker_segment_length (rdr);
                 uint64_t marker_end = rdr->offset - 2/*bytes of read segment length*/ + lh;
 
-                uint8_t tc_th = jpg_reader_read_value_u8 (rdr);
-                uint8_t tc = tc_th >> 4;
-                uint8_t th = tc_th & 0xF;
-
-                // Validate that the DHT has a valid target.
-                struct jpg_huffman_table_t *dht = NULL;
-                if (th <= 4) {
-                    if (tc == 0) {
-                        dht = jpg->dc_dht+th;
-                    } else if (tc == 1) {
-                        dht = jpg->ac_dht+th;
-                    } else {
-                        jpg_error (rdr, "Invalid huffman table class '%u'", tc);
-                    }
-                } else {
-                    jpg_error (rdr, "Invalid huffman table destination identifier, '%u'", th);
-                }
-
-                // Read list of Li elements
-                uint16_t num_values = 0;
-                if (dht != NULL) {
-                    for (int i=0; i<16; i++) {
-                        dht->bits[i] = jpg_reader_read_value_u8 (rdr);
-                        num_values += dht->bits[i];
-                    }
-                }
-
-                // Read list of Vij elements.
-                if (num_values > 0) {
-                    dht->huffval = mem_pool_push_array (pool, num_values, uint8_t);
-                    int vij_idx = 0;
-                    for (int i=0; i<16; i++) {
-                        if (dht->bits[i] != 0) {
-                            for (int j=0; j < dht->bits[i]; j++) {
-                                dht->huffval[vij_idx++] = jpg_reader_read_value_u8 (rdr);
-                            }
-                        }
-                    }
-
-                    // Generate_size_table (this a procedure from the spec)
-                    // NOTE: The flow diagram for this procedure in the spec
-                    // looks broken to me. If they are using 0 indexed lists
-                    // they initialize i to 1, which skips the first value of
-                    // BITS(i). If they are using 1 indexed lists, then the
-                    // first value they set is HUFFSIZE(0) which is out of
-                    // bounds.
-                    //
-                    // I looked at a few implementations and the consensus seems
-                    // to be what I do here, how can the spec be buggy?, no one
-                    // uses it?.
-                    dht->huffsize = mem_pool_push_array (pool, num_values+1, uint8_t);
-                    uint64_t k = 0;
-                    for (int i=0; i<16; i++) {
-                        for (int j=1; j <= dht->bits[i]; j++) {
-                            dht->huffsize[k++] = i + 1;
-                        }
-                    }
-                    dht->huffsize[k] = 0;
-
-                    // Generate_code_table (this a procedure from the spec)
-                    dht->huffcode = mem_pool_push_array (pool, num_values, uint8_t);
-                    k = 0;
-                    uint16_t code = 0;
-                    uint8_t si = dht->huffsize[0];
-                    while (si == dht->huffsize[k]) {
-                        dht->huffcode[k] = code;
-                        code++;
-                        k++;
-
-                        if (dht->huffsize[k] == 0) break;
-
-                        if (si != dht->huffsize[k]) {
-                            do {
-                                code <<= 1;
-                                si++;
-                            } while (dht->huffsize[k] != si);
-                        }
-                    }
-
-                    // Decoder_tables
-                    int j = 0;
-                    for (int i=0; i<16; i++) {
-                        if (dht->bits[i] == 0) {
-                            dht->maxcode[i] = -1;
-                        } else {
-                            dht->valptr[i] = j;
-                            dht->mincode[i] = dht->huffcode[j];
-                            j += dht->bits[i];
-                            dht->maxcode[i] = dht->huffcode[j-1];
-                        }
-                    }
-                }
-
                 // Concatenate the read data.
                 catr_cat (catr, "DHT\n");
                 catr_push_indent (catr);
 
                 catr_cat (catr, "Lh: %u\n", lh);
-                char *tc_name = tc == 0 ? "DC" : ( tc == 1 ? "AC" : "?");
-                catr_cat (catr, "Tc: %u (%s)\n", tc, tc_name);
-                catr_cat (catr, "Th: %u\n", th);
 
-                catr_cat (catr, "Li: (");
-                for (int i=0; i<16; i++) {
-                    catr_cat (catr, "%u", dht->bits[i]);
-                    if (i < 15) catr_cat (catr, ", ");
-                }
-                catr_cat (catr, ")\n");
+                while (!rdr->error && rdr->offset < marker_end) {
+                    uint8_t tc_th = jpg_reader_read_value_u8 (rdr);
+                    uint8_t tc = tc_th >> 4;
+                    uint8_t th = tc_th & 0xF;
 
-                catr_cat (catr, "HUFFVAL:  (");
-                for (int i=0; i<num_values; i++) {
-                    catr_cat (catr, "  0x%02X", dht->huffval[i]);
-                    if (i < num_values-1) catr_cat (catr, ", ");
-                }
-                catr_cat (catr, ")\n");
-
-                catr_cat (catr, "-------------------\n");
-                catr_cat (catr, "HUFFSIZE: (");
-                for (int i=0; i<num_values+1; i++) {
-                    catr_cat (catr, "%6u", dht->huffsize[i]);
-                    if (i < num_values) catr_cat (catr, ", ");
-                }
-                catr_cat (catr, ")\n");
-
-                catr_cat (catr, "HUFFCODE: (");
-                for (int i=0; i<num_values; i++) {
-                    catr_cat (catr, "0x%04X", dht->huffcode[i]);
-                    if (i < num_values-1) catr_cat (catr, ", ");
-                }
-                catr_cat (catr, ")\n");
-
-                catr_cat (catr, "MAXCODE:  (");
-                for (int i=0; i<16; i++) {
-                    if (dht->maxcode[i] == -1) {
-                        catr_cat (catr, "    -1");
+                    // Validate that the DHT has a valid target.
+                    struct jpg_huffman_table_t *dht = NULL;
+                    if (th <= 4) {
+                        if (tc == 0) {
+                            dht = jpg->dc_dht+th;
+                        } else if (tc == 1) {
+                            dht = jpg->ac_dht+th;
+                        } else {
+                            jpg_error (rdr, "Invalid huffman table class '%u'", tc);
+                        }
                     } else {
-                        catr_cat (catr, "0x%04X", dht->maxcode[i]);
+                        jpg_error (rdr, "Invalid huffman table destination identifier, '%u'", th);
                     }
-                    if (i < 16-1) catr_cat (catr, ", ");
-                }
-                catr_cat (catr, ")\n");
 
-                catr_cat (catr, "MINCODE:  (");
-                for (int i=0; i<16; i++) {
-                    catr_cat (catr, "0x%04X", dht->mincode[i]);
-                    if (i < 16-1) catr_cat (catr, ", ");
-                }
-                catr_cat (catr, ")\n");
+                    // Read list of Li elements
+                    uint16_t num_values = 0;
+                    if (dht != NULL) {
+                        for (int i=0; i<16; i++) {
+                            dht->bits[i] = jpg_reader_read_value_u8 (rdr);
+                            num_values += dht->bits[i];
+                        }
+                    }
 
-                catr_cat (catr, "VALPTR:   (");
-                for (int i=0; i<16; i++) {
-                    catr_cat (catr, "%d", dht->valptr[i]);
-                    if (i < 16-1) catr_cat (catr, ", ");
-                }
-                catr_cat (catr, ")\n");
+                    // Read list of Vij elements.
+                    if (num_values > 0) {
+                        dht->huffval = mem_pool_push_array (pool, num_values, uint8_t);
+                        int vij_idx = 0;
+                        for (int i=0; i<16; i++) {
+                            if (dht->bits[i] != 0) {
+                                for (int j=0; j < dht->bits[i]; j++) {
+                                    dht->huffval[vij_idx++] = jpg_reader_read_value_u8 (rdr);
+                                }
+                            }
+                        }
 
-                if (marker_end != rdr->offset) {
-                    jpg_warn (rdr, "Padded marker '%s'.", marker_name(rdr, marker));
-                    jpg_jump_to (rdr, marker_end);
+                        // Generate_size_table (this a procedure from the spec)
+                        // NOTE: The flow diagram for this procedure in the spec
+                        // looks broken to me. If they are using 0 indexed lists
+                        // they initialize i to 1, which skips the first value of
+                        // BITS(i). If they are using 1 indexed lists, then the
+                        // first value they set is HUFFSIZE(0) which is out of
+                        // bounds.
+                        //
+                        // I looked at a few implementations and the consensus seems
+                        // to be what I do here, how can the spec be buggy?, no one
+                        // uses it?.
+                        dht->huffsize = mem_pool_push_array (pool, num_values+1, uint8_t);
+                        uint64_t k = 0;
+                        for (int i=0; i<16; i++) {
+                            for (int j=1; j <= dht->bits[i]; j++) {
+                                dht->huffsize[k++] = i + 1;
+                            }
+                        }
+                        dht->huffsize[k] = 0;
+
+                        // Generate_code_table (this a procedure from the spec)
+                        dht->huffcode = mem_pool_push_array (pool, num_values, uint8_t);
+                        k = 0;
+                        uint16_t code = 0;
+                        uint8_t si = dht->huffsize[0];
+                        while (si == dht->huffsize[k]) {
+                            dht->huffcode[k] = code;
+                            code++;
+                            k++;
+
+                            if (dht->huffsize[k] == 0) break;
+
+                            if (si != dht->huffsize[k]) {
+                                do {
+                                    code <<= 1;
+                                    si++;
+                                } while (dht->huffsize[k] != si);
+                            }
+                        }
+
+                        // Decoder_tables
+                        int j = 0;
+                        for (int i=0; i<16; i++) {
+                            if (dht->bits[i] == 0) {
+                                dht->maxcode[i] = -1;
+                            } else {
+                                dht->valptr[i] = j;
+                                dht->mincode[i] = dht->huffcode[j];
+                                j += dht->bits[i];
+                                dht->maxcode[i] = dht->huffcode[j-1];
+                            }
+                        }
+                    }
+
+                    char *tc_name = tc == 0 ? "DC" : ( tc == 1 ? "AC" : "?");
+                    catr_cat (catr, "Tc: %u (%s)\n", tc, tc_name);
+                    catr_cat (catr, "Th: %u\n", th);
+
+                    catr_cat (catr, "Li: (");
+                    for (int i=0; i<16; i++) {
+                        catr_cat (catr, "%u", dht->bits[i]);
+                        if (i < 15) catr_cat (catr, ", ");
+                    }
+                    catr_cat (catr, ")\n");
+
+                    catr_cat (catr, "HUFFVAL:  (");
+                    for (int i=0; i<num_values; i++) {
+                        catr_cat (catr, "  0x%02X", dht->huffval[i]);
+                        if (i < num_values-1) catr_cat (catr, ", ");
+                    }
+                    catr_cat (catr, ")\n");
+
+                    catr_cat (catr, "-------------------\n");
+                    catr_cat (catr, "HUFFSIZE: (");
+                    for (int i=0; i<num_values+1; i++) {
+                        catr_cat (catr, "%6u", dht->huffsize[i]);
+                        if (i < num_values) catr_cat (catr, ", ");
+                    }
+                    catr_cat (catr, ")\n");
+
+                    catr_cat (catr, "HUFFCODE: (");
+                    for (int i=0; i<num_values; i++) {
+                        catr_cat (catr, "0x%04X", dht->huffcode[i]);
+                        if (i < num_values-1) catr_cat (catr, ", ");
+                    }
+                    catr_cat (catr, ")\n");
+
+                    catr_cat (catr, "MAXCODE:  (");
+                    for (int i=0; i<16; i++) {
+                        if (dht->maxcode[i] == -1) {
+                            catr_cat (catr, "    -1");
+                        } else {
+                            catr_cat (catr, "0x%04X", dht->maxcode[i]);
+                        }
+                        if (i < 16-1) catr_cat (catr, ", ");
+                    }
+                    catr_cat (catr, ")\n");
+
+                    catr_cat (catr, "MINCODE:  (");
+                    for (int i=0; i<16; i++) {
+                        catr_cat (catr, "0x%04X", dht->mincode[i]);
+                        if (i < 16-1) catr_cat (catr, ", ");
+                    }
+                    catr_cat (catr, ")\n");
+
+                    catr_cat (catr, "VALPTR:   (");
+                    for (int i=0; i<16; i++) {
+                        catr_cat (catr, "%d", dht->valptr[i]);
+                        if (i < 16-1) catr_cat (catr, ", ");
+                    }
+                    catr_cat (catr, ")\n\n");
+
                 }
 
                 catr_pop_indent (catr);
+
+                if (marker_end != rdr->offset) {
+                    jpg_error (rdr, "Invalid DHT marker, reading didn't end at marker end.");
+                    jpg_jump_to (rdr, marker_end);
+                }
 
             } else {
                 catr_cat (catr, "%s\n", marker_name (rdr, marker));
