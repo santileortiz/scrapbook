@@ -1085,9 +1085,23 @@ uint8_t jpg_huffman_decode (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg,
     return value;
 }
 
-uint8_t jpg_decode_dc (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg, struct jpg_huffman_table_t *dht)
+uint16_t bit_masks[] = {0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 1023, 2047, 4095, 8191, 16383, 32767};
+
+int16_t jpg_decode_dc (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg, struct jpg_huffman_table_t *dht)
 {
-    return 0;
+    uint8_t magnitude_class = jpg_huffman_decode (rdr, jpg, dht);
+
+    assert (jpg->code_buffer == 0);
+    for (int i=0; i<magnitude_class; i++) {
+        jpg_next_bit (rdr, jpg);
+    }
+
+    int16_t v = jpg->code_buffer;
+    int16_t vt = 1 << (magnitude_class-1);
+    if (v < vt) {
+        v = v + (-1 << magnitude_class) + 1;
+    }
+    return v;
 }
 
 uint8_t jpg_decode_ac (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg, struct jpg_huffman_table_t *dht)
@@ -1470,8 +1484,8 @@ void cat_jpeg_structure (string_t *str, char *fname)
                     if (scan_component->csj == frame_component->ci) {
                         for (int h_idx = 0; h_idx < frame_component->hi; h_idx++) {
                             for (int v_idx = 0; v_idx < frame_component->vi; v_idx++) {
-                                uint8_t dc = jpg_decode_dc (rdr, jpg, jpg->dc_dht+scan_component->tdj);
-                                catr_cat (catr, "0x%02X ", dc);
+                                int16_t dc = jpg_decode_dc (rdr, jpg, jpg->dc_dht+scan_component->tdj);
+                                catr_cat (catr, "%d ", dc);
 
                                 uint8_t ac = 0;
                                 do {
