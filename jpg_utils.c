@@ -820,8 +820,12 @@ uint64_t jpg_reader_read_value (struct jpg_reader_t *rdr, int value_size)
     return value;
 }
 
-#define jpg_reader_read_value_u8(READER) \
-    (*(jpg_file_reader_read_bytes(READER, 1)))
+static inline
+uint8_t jpg_reader_read_value_u8(struct jpg_reader_t *rdr)
+{
+    uint8_t *data = jpg_file_reader_read_bytes(rdr, 1);
+    return data != NULL ? *data : 0;
+}
 
 // NOTE: Be careful not to call this after stand alone markers SOI, EOI and TEM.
 // :endianess_dependant
@@ -1061,24 +1065,27 @@ void jpg_next_bit (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg)
                 }
             }
         }
+    }
 
-        if ((jpg->code_buffer & 16) == 0) {
-            jpg->code_buffer <<= 1;
-            jpg->code_buffer |= (jpg->byte >> 7);
-            jpg->byte <<= 1;
-        } else {
-            jpg_error (rdr, "Tried to read a huffman code larger than 16 bits, data stream is corrupt.");
-        }
+    if ((jpg->code_buffer & 16) == 0) {
+        jpg->code_buffer <<= 1;
+        jpg->code_buffer |= (jpg->byte >> 7);
+        jpg->byte <<= 1;
+        jpg->bit_cnt--;
+    } else {
+        jpg_error (rdr, "Tried to read a huffman code larger than 16 bits, data stream is corrupt.");
     }
 }
 
 uint8_t jpg_huffman_decode (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg, struct jpg_huffman_table_t *dht)
 {
+    jpg_next_bit (rdr, jpg);
+
     int i=0;
-    do {
+    while (!rdr->error && jpg->code_buffer > dht->maxcode[i]) {
         jpg_next_bit (rdr, jpg);
         i++;
-    } while (!rdr->error && jpg->code_buffer > dht->maxcode[i]);
+    }
 
     uint8_t value = dht->huffval[dht->valptr[i] + jpg->code_buffer - dht->mincode[i]];
     jpg->code_buffer = 0;
@@ -1087,26 +1094,19 @@ uint8_t jpg_huffman_decode (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg,
 
 uint16_t bit_masks[] = {0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 1023, 2047, 4095, 8191, 16383, 32767};
 
-int16_t jpg_decode_dc (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg, struct jpg_huffman_table_t *dht)
+int16_t jpg_receive_extend (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg, struct jpg_huffman_table_t *dht, uint8_t num_bits)
 {
-    uint8_t magnitude_class = jpg_huffman_decode (rdr, jpg, dht);
-
     assert (jpg->code_buffer == 0);
-    for (int i=0; i<magnitude_class; i++) {
+    for (int i=0; i<num_bits; i++) {
         jpg_next_bit (rdr, jpg);
     }
 
     int16_t v = jpg->code_buffer;
-    int16_t vt = 1 << (magnitude_class-1);
+    int16_t vt = 1 << (num_bits-1);
     if (v < vt) {
-        v = v + (-1 << magnitude_class) + 1;
+        v = v + (-1 << num_bits) + 1;
     }
     return v;
-}
-
-uint8_t jpg_decode_ac (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg, struct jpg_huffman_table_t *dht)
-{
-    return 0;
 }
 
 // This new jpeg decoder function actually tries to decode the image data
@@ -1481,18 +1481,47 @@ void cat_jpeg_structure (string_t *str, char *fname)
                     struct jpg_frame_component_spec_t *frame_component = jpg->frame_components+c_idx;
                     struct jpg_scan_component_spec_t *scan_component = jpg->scan_components+c_idx;
 
+                    int16_t old_dc[ns];
+                    memset (old_dc, 0, ns*sizeof(int16_t));
+
                     if (scan_component->csj == frame_component->ci) {
                         for (int h_idx = 0; h_idx < frame_component->hi; h_idx++) {
                             for (int v_idx = 0; v_idx < frame_component->vi; v_idx++) {
-                                int16_t dc = jpg_decode_dc (rdr, jpg, jpg->dc_dht+scan_component->tdj);
-                                catr_cat (catr, "%d ", dc);
+                                struct jpg_huffman_table_t *dc_dht = jpg->dc_dht+scan_component->tdj;
+                                struct jpg_huffman_table_t *ac_dht = jpg->ac_dht+scan_component->taj;
 
-                                uint8_t ac = 0;
+                                // Decode the DC coefficient
+                                uint8_t magnitude_class = jpg_huffman_decode (rdr, jpg, dc_dht);
+                                int16_t dc_diff = jpg_receive_extend (rdr, jpg, dc_dht, magnitude_class);
+                                old_dc[c_idx] += dc_diff;
+
+                                // Decode AC coefficients
+                                int16_t zz[64];
+                                memset (zz, 0, 64*sizeof(int16_t));
+                                zz[0] = old_dc[c_idx];
+
+                                uint8_t rs;
+                                int zz_idx = 1;
                                 do {
-                                    ac = jpg_decode_ac (rdr, jpg, jpg->ac_dht+scan_component->taj);
-                                } while (ac != 0 /* End of block */);
+                                    rs = jpg_huffman_decode (rdr, jpg, ac_dht);
+                                    if (rs == 0xF0) {
+                                        zz_idx += 16;
+
+                                    } else if (rs != 0) {
+                                        uint8_t amplitude_class = rs & 0xF;
+                                        zz_idx += (rs >> 4);
+
+                                        
+                                        zz[zz_idx] = jpg_receive_extend (rdr, jpg, ac_dht, amplitude_class);
+                                    }
+
+                                } while (((rs & 0xF) != 0 || (rs >> 4) == 15) /*Not EOB*/ && zz_idx < 64);
+
+                                catr_cat (catr, "%d ", old_dc[c_idx]);
                             }
                         }
+
+                        break;
 
                     } else {
                         jpg_error (rdr, "Mapping between frame and scan component specifications is not 1:1. This is not implemented yet.");
