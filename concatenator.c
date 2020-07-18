@@ -282,3 +282,19 @@ void str_cat_catr (string_t *str, struct concatenator_t *catr)
     char *dst = str_data(str) + original_len;
     catr_write (catr, dst);
 }
+
+char* catr_write_c (mem_pool_t *pool, struct concatenator_t *catr)
+{
+    char *res = mem_pool_push_size (pool, catr_compute_len (catr) + 1);
+    catr_write (catr, res);
+
+    return res;
+}
+
+void print_catr (struct concatenator_t *catr)
+{
+    mem_pool_t pool = {0};
+    char *str = catr_write_c (&pool, catr);
+    printf ("%s", str);
+    mem_pool_destroy (&pool);
+}

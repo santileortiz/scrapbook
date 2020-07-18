@@ -1,0 +1,2 @@
+Usage:
+scrapbook [--jpeg-structure <file> | --find-duplicates-file <directory>]
