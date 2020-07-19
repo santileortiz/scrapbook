@@ -1166,6 +1166,7 @@ void YCbCr_to_RGB (uint8_t *ycbcr, uint8_t *rgb)
     rgb[2] = CLAMP(b, 0, 255);
 }
 
+#define IDCT_FLOAT_UPSCALE(x)  (((int64_t) ((x) * 4096.0f + 0.5f)) << 8)
 // This reverse mapping is used to copute the xy block coordinates based on the
 // index in the zig zag ordering. Given a position in the zig zag order z_idx,
 // jpg_zig_zag_to_block_map[z_idx] will store the index in the 8x8 block
@@ -1196,8 +1197,24 @@ uint8_t jpg_block_to_zig_zag_map[64] =
     35, 36, 48, 49, 57, 58, 62, 63
 };
 
+// These coefficients are the result of evaluating the following expression for
+// all u and v and x=0 and y=0.
+//
+//     (2x + 1)uπ       (2y + 1)vπ
+// cos ---------- * cos ----------
+//         16               16
+//
+// TODO: When doing the full IDCT these coefficients won't work because x and y
+// will change too. For that, I think we need an 8x8 array of just
+//
+//                       (2x + 1)uπ
+//                   cos ----------
+//                           16
+//
+// for all values of x and u. Then we need to split the IDCT computation into a
+// horizontal and a vertical pass.
 static const
-double jpg_idct_coefficient[64] =
+double jpg_idct_cos_coeff[64] =
 {
     1.0,            0.980785280403, 0.923879532511, 0.831469612303, 0.707106781187, 0.555570233020, 0.382683432365, 0.195090322016,
     0.980785280403, 0.961939766256, 0.906127446353, 0.815493156849, 0.693519922661, 0.544895106776, 0.375330277518, 0.191341716183,
@@ -1641,11 +1658,16 @@ void cat_jpeg_structure (string_t *str, char *fname)
             int16_t diff[ns];
             memset (old_dc, 0, ns*sizeof(int16_t));
 
-            // First line
-            //uint64_t mcus_to_decode = x/(8*hi_max);
+            uint64_t x_blocks_len = x/(8*hi_max);
+            uint64_t y_blocks_len = y/(8*vi_max);
 
+#if 0
+            // First line
+            uint64_t mcus_to_decode = x_blocks_len;
+#else
             // Full image
-            uint64_t mcus_to_decode = (x/(8*hi_max))*(y/(8*vi_max));
+            uint64_t mcus_to_decode = x_blocks_len*y_blocks_len;
+#endif
 
             catr_push_indent (catr);
             catr_cat (catr, "Scan's MCU sequence\n");
@@ -1699,10 +1721,20 @@ void cat_jpeg_structure (string_t *str, char *fname)
                                     int64_t q00 = (((int64_t)zz[c_idx][0])*((int64_t)dqt->q[0])) << 39;
 
                                     for (zz_idx=1; zz_idx < 64; zz_idx++) {
-                                        int64_t coefficient_int = YCbCr_FLOAT_UPSCALE(
-                                            jpg_idct_coefficient[jpg_zig_zag_to_block_map[zz_idx]]);
+                                        uint8_t block_idx = jpg_zig_zag_to_block_map[zz_idx];
 
-                                        q00 += ((zz[c_idx][zz_idx]*dqt->q[zz_idx])<<20) * coefficient_int;
+                                        // If u=0 or v=0 multiply by 1/sqrt(2)
+                                        // and half-downscale so tmp is still
+                                        // upscaled by 20. It's not possible
+                                        // that both u and v are 0 because the
+                                        // case for q00 was handled before.
+                                        int64_t tmp = ((zz[c_idx][zz_idx]*dqt->q[zz_idx])<<20);
+                                        if (block_idx < 8 || block_idx%8 == 0) {
+                                            tmp *= IDCT_FLOAT_UPSCALE(0.707107);
+                                            tmp = ((tmp + SIGN(tmp)*(1L<<19)) >> 20);
+                                        }
+
+                                        q00 += tmp * IDCT_FLOAT_UPSCALE(jpg_idct_cos_coeff[block_idx]);
                                     }
 
                                     ycbcr[c_idx] = CLAMP(
@@ -1719,7 +1751,7 @@ void cat_jpeg_structure (string_t *str, char *fname)
                 }
 
                 catr_cat (catr, "MCU(%d)[%ld,%ld]\n               ",
-                          mcu_idx, mcu_idx%I_CEIL_DIVIDE(x,8), mcu_idx/I_CEIL_DIVIDE(y,8));
+                          mcu_idx, mcu_idx%x_blocks_len, mcu_idx/x_blocks_len);
                 for (int c_idx=0; c_idx<ns; c_idx++) {
                     char buff[20];
                     sprintf (buff, "C%d: DC DIFF=%d", c_idx, diff[c_idx]);
@@ -1728,14 +1760,14 @@ void cat_jpeg_structure (string_t *str, char *fname)
                 catr_cat (catr, "\n");
 
                 for (int j=0; j<8; j++) {
-                    catr_cat (catr, "│ ");
+                    catr_cat (catr, "┃ ");
                     for (int c_idx=0; c_idx<ns; c_idx++) {
                         for (int i=0; i<8; i++) {
                             uint8_t zz_idx = jpg_block_to_zig_zag_map[j*8+i];
                             catr_cat (catr, "%5d", zz[c_idx][zz_idx]);
                         }
 
-                        catr_cat (catr, " │ ");
+                        catr_cat (catr, " ┃ ");
                     }
 
                     catr_cat (catr, "\n");
