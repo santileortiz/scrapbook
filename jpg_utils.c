@@ -1133,6 +1133,38 @@ int16_t jpg_receive_extend (struct jpg_reader_t *rdr, struct jpg_decoder_t *jpg,
     return v;
 }
 
+///////////////////////////
+// Conversion between YCbCr and RGB, based on the one in stb_image.h
+
+// This macro takes a float and upscales it into a range equivalent to a left
+// shift by 20. The +0.5f is the equivalent of rounding the resulting upscaled
+// value.
+// I'm not sure why it multiplies by 4096 (left shift by 12), then does an
+// actual left shif by 8. Isn't it equivalent to just multiply by 1048576 (2^20),
+// or do a left shift by 20?.
+#define YCbCr_FLOAT_UPSCALE(x)  (((int32_t) ((x) * 4096.0f + 0.5f)) << 8)
+static inline
+void YCbCr_to_RGB (uint8_t *ycbcr, uint8_t *rgb)
+{
+    // Why not do YCbCr_FLOAT_UPSCALE(ycbcr[0])?
+    int32_t y_int = (ycbcr[0] << 20) + (1<<19); // rounding
+
+    int32_t r,g,b;
+    int32_t cb = ycbcr[1] - 128;
+    int32_t cr = ycbcr[2] - 128;
+    r = y_int                                                        + cr*YCbCr_FLOAT_UPSCALE(1.40200f);
+    g = y_int + ((cb*(-YCbCr_FLOAT_UPSCALE(0.34414f))) & 0xffff0000) + cr*(-YCbCr_FLOAT_UPSCALE(0.71414f)); // Why the & 0xffff0000?
+    b = y_int + cb*YCbCr_FLOAT_UPSCALE(1.77200f);
+
+    r >>= 20;
+    g >>= 20;
+    b >>= 20;
+
+    rgb[0] = CLAMP(r, 0, 255);
+    rgb[1] = CLAMP(g, 0, 255);
+    rgb[2] = CLAMP(b, 0, 255);
+}
+
 // This new jpeg decoder function actually tries to decode the image data
 // stream, as opposed to print_jpeg_structure() which just prints the overall
 // structure.
@@ -1555,7 +1587,7 @@ void cat_jpeg_structure (string_t *str, char *fname)
     // default.
     if (!rdr->error && sof == JPG_MARKER_SOF0) {
         if (p == 8) {
-            int32_t ycbcr[3];
+            uint8_t ycbcr[3];
 
             int16_t old_dc[ns];
             memset (old_dc, 0, ns*sizeof(int16_t));
@@ -1602,7 +1634,7 @@ void cat_jpeg_structure (string_t *str, char *fname)
                                         zz[zz_idx++] = jpg_receive_extend (rdr, jpg, ac_dht, amplitude_class);
                                     }
 
-                                } while (!rdr->error && ((rs & 0xF) != 0 || (rs >> 4) == 15) /*Not EOB*/ && zz_idx < 64);
+                                } while (!rdr->error && ((rs & 0xF) != 0 || (rs >> 4) == 15) /*Not EOB*/);
 
                                 catr_cat (catr, "%4d ", dc_diff);
                                 for (int i=1; i<64; i++) {
@@ -1610,8 +1642,17 @@ void cat_jpeg_structure (string_t *str, char *fname)
                                 }
                                 catr_cat (catr, "\n");
 
-                                ycbcr[c_idx] = CLAMP((old_dc[c_idx]*dqt->q[0])/8 + 128/*2^(p-1)*/, 0, 255);
-                                //catr_cat (catr, "%3d ", ycbcr[c_idx]);
+                                // Sloppy computation of the value of the first
+                                // DCT coefficient and its IDCT.
+                                //
+                                // TODO: Actually perform the IDCT to get the
+                                // color of the first pixel.
+                                int32_t dequantized = old_dc[c_idx]*dqt->q[0];
+                                int32_t q = (dequantized > 0 ?
+                                     (dequantized + 3)/8 :
+                                     (dequantized - 3)/8 ) // rounding
+                                    + 128/*2^(p-1)*/; // remove bias
+                                ycbcr[c_idx] = CLAMP(q, 0, 255);
                             }
                         }
 
@@ -1620,11 +1661,10 @@ void cat_jpeg_structure (string_t *str, char *fname)
                     }
                 }
 
-                catr_cat (catr, "%3d %3d %3d -> ", ycbcr[0], ycbcr[1], ycbcr[2]);
-                catr_cat (catr, "%3d ", ycbcr[0] + 1402*(ycbcr[2] - 128)/1000);
-                catr_cat (catr, "%3d ", ycbcr[0] - 34414*(ycbcr[1] - 128)/100000 - 71414*(ycbcr[2] - 128)/100000);
-                catr_cat (catr, "%3d", ycbcr[0] + 1772*(ycbcr[1] - 128)/1000);
-                catr_cat (catr, "\n\n");
+                uint8_t rgb[3];
+                YCbCr_to_RGB (ycbcr, rgb);
+                catr_cat (catr, "%3d %3d %3d -> %3d %3d %3d\n",
+                          ycbcr[0], ycbcr[1], ycbcr[2], rgb[0], rgb[1], rgb[2]);
             }
 
         } else {
