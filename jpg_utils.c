@@ -13,6 +13,7 @@ bool file_read_bytes (int file, uint64_t bytes_to_read, void *buffer)
 
     uint64_t bytes_read = 0;
     do {
+        assert (buffer != NULL);
         int status = read (file, buffer+bytes_read, bytes_to_read-bytes_read);
         if (status == -1) {
             success = false;
@@ -1165,6 +1166,49 @@ void YCbCr_to_RGB (uint8_t *ycbcr, uint8_t *rgb)
     rgb[2] = CLAMP(b, 0, 255);
 }
 
+// This reverse mapping is used to copute the xy block coordinates based on the
+// index in the zig zag ordering. Given a position in the zig zag order z_idx,
+// jpg_zig_zag_to_block_map[z_idx] will store the index in the 8x8 block
+// matrix counting row by row (row major).
+static const
+uint8_t jpg_zig_zag_to_block_map[64] =
+{
+     0,  1,  8, 16,  9,  2,  3, 10,
+    17, 24, 32, 25, 18, 11,  4,  5,
+    12, 19, 26, 33, 40, 48, 41, 34,
+    27, 20, 13,  6,  7, 14, 21, 28,
+    35, 42, 49, 56, 57, 50, 43, 36,
+    29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46,
+    53, 60, 61, 54, 47, 55, 62, 63
+};
+
+static const
+uint8_t jpg_block_to_zig_zag_map[64] =
+{
+    0,  1,  5,  6, 14, 15, 27, 28,
+    2,  4,  7, 13, 16, 26, 29, 42,
+    3,  8, 12, 17, 25, 30, 41, 43,
+    9, 11, 18, 24, 31, 40, 44, 53,
+    10, 19, 23, 32, 39, 45, 52, 54,
+    20, 22, 33, 38, 46, 51, 55, 60,
+    21, 34, 37, 47, 50, 56, 59, 61,
+    35, 36, 48, 49, 57, 58, 62, 63
+};
+
+static const
+double jpg_idct_coefficient[64] =
+{
+    1.0,            0.980785280403, 0.923879532511, 0.831469612303, 0.707106781187, 0.555570233020, 0.382683432365, 0.195090322016,
+    0.980785280403, 0.961939766256, 0.906127446353, 0.815493156849, 0.693519922661, 0.544895106776, 0.375330277518, 0.191341716183,
+    0.923879532511, 0.906127446353, 0.853553390593, 0.768177756711, 0.653281482438, 0.513279967159, 0.353553390593, 0.180239955502,
+    0.831469612303, 0.815493156849, 0.768177756711, 0.691341716183, 0.587937801210, 0.461939766256, 0.318189645143, 0.162211674411,
+    0.707106781187, 0.693519922661, 0.653281482438, 0.58793780121 , 0.5,            0.392847479194, 0.270598050073, 0.137949689641,
+    0.555570233020, 0.544895106776, 0.513279967159, 0.461939766256, 0.392847479194, 0.308658283817, 0.212607523692, 0.108386375662,
+    0.382683432365, 0.375330277518, 0.353553390593, 0.318189645143, 0.270598050073, 0.212607523692, 0.146446609407, 0.074657834050,
+    0.195090322016, 0.191341716183, 0.180239955502, 0.162211674411, 0.137949689641, 0.108386375662, 0.074657834050, 0.038060233744
+};
+
 // This new jpeg decoder function actually tries to decode the image data
 // stream, as opposed to print_jpeg_structure() which just prints the overall
 // structure.
@@ -1589,7 +1633,12 @@ void cat_jpeg_structure (string_t *str, char *fname)
         if (p == 8) {
             uint8_t ycbcr[3];
 
+            // Array that stores the value of the DC element of the previous MCU
+            // for each component.
             int16_t old_dc[ns];
+            memset (old_dc, 0, ns*sizeof(int16_t));
+
+            int16_t diff[ns];
             memset (old_dc, 0, ns*sizeof(int16_t));
 
             // First line
@@ -1598,7 +1647,15 @@ void cat_jpeg_structure (string_t *str, char *fname)
             // Full image
             uint64_t mcus_to_decode = (x/(8*hi_max))*(y/(8*vi_max));
 
+            catr_push_indent (catr);
+            catr_cat (catr, "Scan's MCU sequence\n");
+            catr_push_indent (catr);
+
             for (int mcu_idx = 0; !rdr->error && mcu_idx < mcus_to_decode; mcu_idx++) {
+                // This is the target representation of the MCU
+                int16_t zz[ns][64];
+                memset (zz, 0, ns*64*sizeof(int16_t));
+
                 for (int c_idx = 0; !rdr->error && c_idx < ns; c_idx++) {
                     struct jpg_frame_component_spec_t *frame_component = jpg->frame_components+c_idx;
                     struct jpg_scan_component_spec_t *scan_component = jpg->scan_components+c_idx;
@@ -1614,12 +1671,10 @@ void cat_jpeg_structure (string_t *str, char *fname)
                                 uint8_t magnitude_class = jpg_huffman_decode (rdr, jpg, dc_dht);
                                 int16_t dc_diff = jpg_receive_extend (rdr, jpg, dc_dht, magnitude_class);
                                 old_dc[c_idx] += dc_diff;
+                                zz[c_idx][0] = old_dc[c_idx];
+                                diff[c_idx] = dc_diff;
 
                                 // Decode AC coefficients
-                                int16_t zz[64];
-                                memset (zz, 0, 64*sizeof(int16_t));
-                                zz[0] = old_dc[c_idx];
-
                                 uint8_t rs;
                                 int zz_idx = 1;
                                 do {
@@ -1631,28 +1686,30 @@ void cat_jpeg_structure (string_t *str, char *fname)
                                         uint8_t amplitude_class = rs & 0xF;
                                         zz_idx += (rs >> 4);
                                         
-                                        zz[zz_idx++] = jpg_receive_extend (rdr, jpg, ac_dht, amplitude_class);
+                                        zz[c_idx][zz_idx++] = jpg_receive_extend (rdr, jpg, ac_dht, amplitude_class);
+                                    }
+                                } while (!rdr->error && zz_idx < 64 && ((rs & 0xF) != 0 || (rs >> 4) == 15) /*Not EOB*/);
+
+                                // Compute the IDCT for the first pixel in the
+                                // 8x8 block.
+                                {
+                                    // For u=0 and v=0 (q00), Cv=Cu=1/sqrt(2).
+                                    // This results in a divide by 2. This is
+                                    // implemented by using 39 and not 40.
+                                    int64_t q00 = (((int64_t)zz[c_idx][0])*((int64_t)dqt->q[0])) << 39;
+
+                                    for (zz_idx=1; zz_idx < 64; zz_idx++) {
+                                        int64_t coefficient_int = YCbCr_FLOAT_UPSCALE(
+                                            jpg_idct_coefficient[jpg_zig_zag_to_block_map[zz_idx]]);
+
+                                        q00 += ((zz[c_idx][zz_idx]*dqt->q[zz_idx])<<20) * coefficient_int;
                                     }
 
-                                } while (!rdr->error && ((rs & 0xF) != 0 || (rs >> 4) == 15) /*Not EOB*/);
-
-                                catr_cat (catr, "%4d ", dc_diff);
-                                for (int i=1; i<64; i++) {
-                                    catr_cat (catr, "%4d ", zz[i]);
+                                    ycbcr[c_idx] = CLAMP(
+                                        ((q00 + SIGN(q00)*(1L<<41)) >> 42) // downscale 40 bits and divide by IDCT gain of 4 while rounding.
+                                        + 128, // remove level shift of 2^(p-1).
+                                        0, 255);
                                 }
-                                catr_cat (catr, "\n");
-
-                                // Sloppy computation of the value of the first
-                                // DCT coefficient and its IDCT.
-                                //
-                                // TODO: Actually perform the IDCT to get the
-                                // color of the first pixel.
-                                int32_t dequantized = old_dc[c_idx]*dqt->q[0];
-                                int32_t q = (dequantized > 0 ?
-                                     (dequantized + 3)/8 :
-                                     (dequantized - 3)/8 ) // rounding
-                                    + 128/*2^(p-1)*/; // remove bias
-                                ycbcr[c_idx] = CLAMP(q, 0, 255);
                             }
                         }
 
@@ -1661,11 +1718,38 @@ void cat_jpeg_structure (string_t *str, char *fname)
                     }
                 }
 
+                catr_cat (catr, "MCU(%d)[%ld,%ld]\n               ",
+                          mcu_idx, mcu_idx%I_CEIL_DIVIDE(x,8), mcu_idx/I_CEIL_DIVIDE(y,8));
+                for (int c_idx=0; c_idx<ns; c_idx++) {
+                    char buff[20];
+                    sprintf (buff, "C%d: DC DIFF=%d", c_idx, diff[c_idx]);
+                    catr_cat (catr, "%-43s", buff);
+                }
+                catr_cat (catr, "\n");
+
+                for (int j=0; j<8; j++) {
+                    catr_cat (catr, "│ ");
+                    for (int c_idx=0; c_idx<ns; c_idx++) {
+                        for (int i=0; i<8; i++) {
+                            uint8_t zz_idx = jpg_block_to_zig_zag_map[j*8+i];
+                            catr_cat (catr, "%5d", zz[c_idx][zz_idx]);
+                        }
+
+                        catr_cat (catr, " │ ");
+                    }
+
+                    catr_cat (catr, "\n");
+                }
+
                 uint8_t rgb[3];
                 YCbCr_to_RGB (ycbcr, rgb);
-                catr_cat (catr, "%3d %3d %3d -> %3d %3d %3d\n",
+                catr_cat (catr, "R00: YCbCr(%d,%d,%d) -> rgb(%d,%d,%d)\n",
                           ycbcr[0], ycbcr[1], ycbcr[2], rgb[0], rgb[1], rgb[2]);
+                catr_cat (catr, "\n");
             }
+
+            catr_pop_indent (catr);
+            catr_pop_indent (catr);
 
         } else {
             jpg_error (rdr, "Only precision equal to 8 is supported, got '%ld'", p);

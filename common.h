@@ -43,6 +43,10 @@ typedef enum {false, true} bool;
 #define CLAMP(a,lower,upper) ((a)>(upper)?(upper):((a)<(lower)?(lower):(a)))
 #endif
 
+#if !defined(SIGN)
+#define SIGN(a) ((a)<0?-1:1)
+#endif
+
 #define WRAP(a,lower,upper) ((a)>(upper)?(lower):((a)<(lower)?(upper):(a)))
 
 #define LOW_CLAMP(a,lower) ((a)<(lower)?(lower):(a))
@@ -224,7 +228,11 @@ typedef union {
 
 #define str_is_small(string) (!((string)->len_small&0x01))
 #define str_len(string) (str_is_small(string)?(string)->len_small/2:(string)->len)
-#define str_data(string) (str_is_small(string)?(string)->str_small:(string)->str)
+static inline
+char* str_data(string_t *str)
+{
+    return (str_is_small(str)?(str)->str_small:(str)->str);
+}
 
 static inline
 char* str_small_alloc (string_t *str, size_t len)
