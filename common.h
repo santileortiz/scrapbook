@@ -2927,6 +2927,9 @@ char* change_extension (mem_pool_t *pool, char *path, char *new_ext)
     return res;
 }
 
+// NOTE: This correctly handles a filename like hola.autosave.repl where there
+// are multiple parts that would look like an extensions. Only the last one will
+// be removed.
 char* remove_extension (mem_pool_t *pool, char *path)
 {
     size_t end_pos = strlen(path)-1;
