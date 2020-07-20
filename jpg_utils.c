@@ -1655,8 +1655,8 @@ void cat_jpeg_structure (string_t *str, char *fname)
             int16_t old_dc[ns];
             memset (old_dc, 0, ns*sizeof(int16_t));
 
-            int16_t diff[ns];
-            memset (old_dc, 0, ns*sizeof(int16_t));
+            int16_t diff[ns][hi_max][vi_max];
+            memset (old_dc, 0, ns*hi_max*vi_max*sizeof(int16_t));
 
             uint64_t x_blocks_len = x/(8*hi_max);
             uint64_t y_blocks_len = y/(8*vi_max);
@@ -1675,8 +1675,8 @@ void cat_jpeg_structure (string_t *str, char *fname)
 
             for (int mcu_idx = 0; !rdr->error && mcu_idx < mcus_to_decode; mcu_idx++) {
                 // This is the target representation of the MCU
-                int16_t zz[ns][64];
-                memset (zz, 0, ns*64*sizeof(int16_t));
+                int16_t zz[ns][hi_max][vi_max][64];
+                memset (zz, 0, ns*hi_max*vi_max*64*sizeof(int16_t));
 
                 for (int c_idx = 0; !rdr->error && c_idx < ns; c_idx++) {
                     struct jpg_frame_component_spec_t *frame_component = jpg->frame_components+c_idx;
@@ -1687,14 +1687,14 @@ void cat_jpeg_structure (string_t *str, char *fname)
                     struct jpg_quantization_table_t *dqt = jpg->dqt+frame_component->tqi;
 
                     if (scan_component->csj == frame_component->ci) {
-                        for (int h_idx = 0; h_idx < frame_component->hi; h_idx++) {
-                            for (int v_idx = 0; v_idx < frame_component->vi; v_idx++) {
+                        for (int v_idx = 0; v_idx < frame_component->vi; v_idx++) {
+                            for (int h_idx = 0; h_idx < frame_component->hi; h_idx++) {
                                 // Decode the DC coefficient
                                 uint8_t magnitude_class = jpg_huffman_decode (rdr, jpg, dc_dht);
                                 int16_t dc_diff = jpg_receive_extend (rdr, jpg, dc_dht, magnitude_class);
                                 old_dc[c_idx] += dc_diff;
-                                zz[c_idx][0] = old_dc[c_idx];
-                                diff[c_idx] = dc_diff;
+                                zz[c_idx][h_idx][v_idx][0] = old_dc[c_idx];
+                                diff[c_idx][h_idx][v_idx] = dc_diff;
 
                                 // Decode AC coefficients
                                 uint8_t rs;
@@ -1708,7 +1708,7 @@ void cat_jpeg_structure (string_t *str, char *fname)
                                         uint8_t amplitude_class = rs & 0xF;
                                         zz_idx += (rs >> 4);
                                         
-                                        zz[c_idx][zz_idx++] = jpg_receive_extend (rdr, jpg, ac_dht, amplitude_class);
+                                        zz[c_idx][h_idx][v_idx][zz_idx++] = jpg_receive_extend (rdr, jpg, ac_dht, amplitude_class);
                                     }
                                 } while (!rdr->error && zz_idx < 64 && ((rs & 0xF) != 0 || (rs >> 4) == 15) /*Not EOB*/);
 
@@ -1718,7 +1718,7 @@ void cat_jpeg_structure (string_t *str, char *fname)
                                     // For u=0 and v=0 (q00), Cv=Cu=1/sqrt(2).
                                     // This results in a divide by 2. This is
                                     // implemented by using 39 and not 40.
-                                    int64_t q00 = (((int64_t)zz[c_idx][0])*((int64_t)dqt->q[0])) << 39;
+                                    int64_t q00 = (((int64_t)zz[c_idx][h_idx][v_idx][0])*((int64_t)dqt->q[0])) << 39;
 
                                     for (zz_idx=1; zz_idx < 64; zz_idx++) {
                                         uint8_t block_idx = jpg_zig_zag_to_block_map[zz_idx];
@@ -1728,7 +1728,7 @@ void cat_jpeg_structure (string_t *str, char *fname)
                                         // upscaled by 20. It's not possible
                                         // that both u and v are 0 because the
                                         // case for q00 was handled before.
-                                        int64_t tmp = ((zz[c_idx][zz_idx]*dqt->q[zz_idx])<<20);
+                                        int64_t tmp = ((zz[c_idx][h_idx][v_idx][zz_idx]*dqt->q[zz_idx])<<20);
                                         if (block_idx < 8 || block_idx%8 == 0) {
                                             tmp *= IDCT_FLOAT_UPSCALE(0.707107);
                                             tmp = ((tmp + SIGN(tmp)*(1L<<19)) >> 20);
@@ -1737,10 +1737,14 @@ void cat_jpeg_structure (string_t *str, char *fname)
                                         q00 += tmp * IDCT_FLOAT_UPSCALE(jpg_idct_cos_coeff[block_idx]);
                                     }
 
-                                    ycbcr[c_idx] = CLAMP(
-                                        ((q00 + SIGN(q00)*(1L<<41)) >> 42) // downscale 40 bits and divide by IDCT gain of 4 while rounding.
-                                        + 128, // remove level shift of 2^(p-1).
-                                        0, 255);
+                                    // Only store keep the YCbCr values of the
+                                    // first sample.
+                                    if (v_idx == 0 && h_idx == 0) {
+                                        ycbcr[c_idx] = CLAMP(
+                                            ((q00 + SIGN(q00)*(1L<<41)) >> 42) // downscale 40 bits and divide by IDCT gain of 4 while rounding.
+                                            + 128, // remove level shift of 2^(p-1).
+                                            0, 255);
+                                    }
                                 }
                             }
                         }
@@ -1750,21 +1754,37 @@ void cat_jpeg_structure (string_t *str, char *fname)
                     }
                 }
 
-                catr_cat (catr, "MCU(%d)[%ld,%ld]\n               ",
+                catr_cat (catr, "MCU(%d)[%ld,%ld]\n          ",
                           mcu_idx, mcu_idx%x_blocks_len, mcu_idx/x_blocks_len);
                 for (int c_idx=0; c_idx<ns; c_idx++) {
-                    char buff[20];
-                    sprintf (buff, "C%d: DC DIFF=%d", c_idx, diff[c_idx]);
-                    catr_cat (catr, "%-43s", buff);
+                    struct jpg_frame_component_spec_t *frame_component = jpg->frame_components+c_idx;
+
+                    for (int v_idx = 0; v_idx < frame_component->vi; v_idx++) {
+                        for (int h_idx = 0; h_idx < frame_component->hi; h_idx++) {
+                            char buff[50];
+                            sprintf (buff, "C%d : H=%d V=%d : DC DIFF=%d", c_idx, h_idx, v_idx, diff[c_idx][h_idx][v_idx]);
+                            catr_cat (catr, "%-43s", buff);
+                        }
+                    }
                 }
                 catr_cat (catr, "\n");
 
                 for (int j=0; j<8; j++) {
                     catr_cat (catr, "┃ ");
                     for (int c_idx=0; c_idx<ns; c_idx++) {
-                        for (int i=0; i<8; i++) {
-                            uint8_t zz_idx = jpg_block_to_zig_zag_map[j*8+i];
-                            catr_cat (catr, "%5d", zz[c_idx][zz_idx]);
+                        struct jpg_frame_component_spec_t *frame_component = jpg->frame_components+c_idx;
+
+                        for (int v_idx = 0; v_idx < frame_component->vi; v_idx++) {
+                            for (int h_idx = 0; h_idx < frame_component->hi; h_idx++) {
+                                for (int i=0; i<8; i++) {
+                                    uint8_t zz_idx = jpg_block_to_zig_zag_map[j*8+i];
+                                    catr_cat (catr, "%5d", zz[c_idx][h_idx][v_idx][zz_idx]);
+                                }
+
+                                if (h_idx < frame_component->hi - 1) catr_cat (catr, " │ ");
+                            }
+
+                            if (v_idx < frame_component->vi - 1) catr_cat (catr, " │ ");
                         }
 
                         catr_cat (catr, " ┃ ");
