@@ -1245,6 +1245,7 @@ void cat_jpeg_structure (string_t *str, char *fname)
     // If true, the printed structure shows the nesting structure used in the
     // specification. If false, we only print the sequence of decoded markers.
     bool spec_nesting = true;
+    bool internal_dht = false;
 
     struct jpg_reader_t _rdr = {0};
     struct jpg_reader_t *rdr = &_rdr;
@@ -1297,15 +1298,17 @@ void cat_jpeg_structure (string_t *str, char *fname)
                     catr_cat (catr, "Tq: %u\n", tq);
 
                     if (dqt != NULL) {
-                        catr_cat (catr, "Qk: (");
-                        for (int k=0; k<64; k++) {
-                            catr_cat (catr, "%d", dqt->q[k]);
-                            if (k < 63) {
-                                catr_cat (catr, ", ");
+                        catr_cat (catr, "Qk:\n");
+                        catr_push_indent (catr);
+                        for (int j=0; j<8; j++) {
+                            for (int i=0; i<8; i++) {
+                                uint8_t zz_idx = jpg_block_to_zig_zag_map[j*8+i];
+                                catr_cat (catr, "%3d", dqt->q[zz_idx]);
                             }
+                            catr_cat (catr, "\n");
                         }
 
-                        catr_cat (catr, ")\n");
+                        catr_pop_indent (catr);
                     }
 
                     if (!rdr->error && rdr->offset != marker_end) catr_cat (catr, "\n");
@@ -1520,53 +1523,69 @@ void cat_jpeg_structure (string_t *str, char *fname)
                     }
                     catr_cat (catr, ")\n");
 
-                    catr_cat (catr, "HUFFVAL:  (");
-                    for (int i=0; i<num_values; i++) {
-                        catr_cat (catr, "  0x%02X", dht->huffval[i]);
-                        if (i < num_values-1) catr_cat (catr, ", ");
-                    }
-                    catr_cat (catr, ")\n");
-
-                    catr_cat (catr, "-------------------\n");
-                    catr_cat (catr, "HUFFSIZE: (");
-                    for (int i=0; i<num_values+1; i++) {
-                        catr_cat (catr, "%6u", dht->huffsize[i]);
-                        if (i < num_values) catr_cat (catr, ", ");
-                    }
-                    catr_cat (catr, ")\n");
-
-                    catr_cat (catr, "HUFFCODE: (");
-                    for (int i=0; i<num_values; i++) {
-                        catr_cat (catr, "0x%04X", dht->huffcode[i]);
-                        if (i < num_values-1) catr_cat (catr, ", ");
-                    }
-                    catr_cat (catr, ")\n");
-
-                    catr_cat (catr, "MAXCODE:  (");
+                    uint32_t code_idx = 0;
                     for (int i=0; i<16; i++) {
-                        if (dht->maxcode[i] == -1) {
-                            catr_cat (catr, "    -1");
-                        } else {
-                            catr_cat (catr, "0x%04X", dht->maxcode[i]);
+                        if (dht->bits[i] != 0) {
+                            catr_cat (catr, "V%d: ", i+1);
+                            for (int j=0; j<dht->bits[i]; j++) {
+                                catr_cat (catr, "0x%X", dht->huffval[code_idx++]);
+                                if (j < dht->bits[i]-1) catr_cat (catr, ", ");
+                            }
+                            catr_cat (catr, "\n");
                         }
-                        if (i < 16-1) catr_cat (catr, ", ");
                     }
-                    catr_cat (catr, ")\n");
 
-                    catr_cat (catr, "MINCODE:  (");
-                    for (int i=0; i<16; i++) {
-                        catr_cat (catr, "0x%04X", dht->mincode[i]);
-                        if (i < 16-1) catr_cat (catr, ", ");
+                    if (internal_dht) {
+                        catr_cat (catr, "-------------------\n");
+
+                        catr_cat (catr, "HUFFVAL:  (");
+                        for (int i=0; i<num_values; i++) {
+                            catr_cat (catr, "  0x%02X", dht->huffval[i]);
+                            if (i < num_values-1) catr_cat (catr, ", ");
+                        }
+                        catr_cat (catr, ")\n");
+
+                        catr_cat (catr, "HUFFSIZE: (");
+                        for (int i=0; i<num_values+1; i++) {
+                            catr_cat (catr, "%6u", dht->huffsize[i]);
+                            if (i < num_values) catr_cat (catr, ", ");
+                        }
+                        catr_cat (catr, ")\n");
+
+                        catr_cat (catr, "HUFFCODE: (");
+                        for (int i=0; i<num_values; i++) {
+                            catr_cat (catr, "0x%04X", dht->huffcode[i]);
+                            if (i < num_values-1) catr_cat (catr, ", ");
+                        }
+                        catr_cat (catr, ")\n");
+
+                        catr_cat (catr, "MAXCODE:  (");
+                        for (int i=0; i<16; i++) {
+                            if (dht->maxcode[i] == -1) {
+                                catr_cat (catr, "    -1");
+                            } else {
+                                catr_cat (catr, "0x%04X", dht->maxcode[i]);
+                            }
+                            if (i < 16-1) catr_cat (catr, ", ");
+                        }
+                        catr_cat (catr, ")\n");
+
+                        catr_cat (catr, "MINCODE:  (");
+                        for (int i=0; i<16; i++) {
+                            catr_cat (catr, "0x%04X", dht->mincode[i]);
+                            if (i < 16-1) catr_cat (catr, ", ");
+                        }
+                        catr_cat (catr, ")\n");
+
+                        catr_cat (catr, "VALPTR:   (");
+                        for (int i=0; i<16; i++) {
+                            catr_cat (catr, "%d", dht->valptr[i]);
+                            if (i < 16-1) catr_cat (catr, ", ");
+                        }
+                        catr_cat (catr, ")\n");
                     }
-                    catr_cat (catr, ")\n");
 
-                    catr_cat (catr, "VALPTR:   (");
-                    for (int i=0; i<16; i++) {
-                        catr_cat (catr, "%d", dht->valptr[i]);
-                        if (i < 16-1) catr_cat (catr, ", ");
-                    }
-                    catr_cat (catr, ")\n\n");
-
+                    catr_cat (catr, "\n");
                 }
 
                 catr_pop_indent (catr);
