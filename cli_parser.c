@@ -1,5 +1,5 @@
 /*
- * Copiright (C) 2019 Santiago León O.
+ * Copyright (C) 2019 Santiago León O.
  */
 
 char* get_cli_arg_opt (char *opt, char **argv, int argc)

@@ -1,5 +1,5 @@
 /*
- * Copiright (C) 2020 Santiago León O.
+ * Copyright (C) 2020 Santiago León O.
  */
 #ifdef __GNUC__
 #define NOT_USED __attribute__ ((unused))

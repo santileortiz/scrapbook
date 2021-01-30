@@ -1,5 +1,5 @@
 /*
- * Copiright (C) 2020 Santiago León O.
+ * Copyright (C) 2020 Santiago León O.
  */
 
 // NOTE: This expects buffer to already be allocated and of size at least
