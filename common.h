@@ -3368,7 +3368,9 @@ type *new_node;                                              \
     LINKED_LIST_PUSH(head_name,new_node)                     \
 }
 
-// TODO: Implement LINKED_LIST_FOR()
+#define LINKED_LIST_FOR(type, varname,headname)              \
+type *varname = headname;                                    \
+for (; varname != NULL; varname = varname->next)
 
 // Linked list sorting
 //
