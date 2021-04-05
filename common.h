@@ -19,7 +19,6 @@
 #include <dirent.h>
 #include <locale.h>
 #include <float.h>
-#include <limits.h>
 
 #ifdef __cplusplus
 #define ZERO_INIT(type) (type){}
@@ -2009,7 +2008,7 @@ typedef struct {
 // NOTE: I reluctantly added closures to ON_DESTROY_CALLBACK. For
 // str_set_pooled() we need a way to pass the string to be freed. Heavy use of
 // closures here is a slippery slope. Expecting to be able to run any code from
-// here will be problematic and closures may gieve the wrong impression that
+// here will be problematic and closures may give the wrong impression that
 // code here is always safe. It's easy to use freed memory from here. Whenever
 // you use these callbacks think carefully! this mechanism should be rareley be
 // used.
@@ -2540,6 +2539,10 @@ bool full_file_write (const void *data, ssize_t size, const char *path)
     return failed;
 }
 
+// TODO: Go back to the more user friendly name full_file_read() instead of
+// full_file_read_full() and remove the do_sh_expand parameter defaulting to
+// false. This needs to be done after we are sure no applications are expecting
+// sh_expand() to be called here.
 char* full_file_read_full (mem_pool_t *pool, const char *path, uint64_t *len, bool do_sh_expand)
 {
     bool success = true;
@@ -2606,22 +2609,29 @@ char* full_file_read_full (mem_pool_t *pool, const char *path, uint64_t *len, bo
     return retval;
 }
 
-// TODO: Get rid of this wrapper, this was only for backward compatibility.
-//
-// I now think calling sh_expand() insode of full_file_read() is a mistake. It's
-// prone to let the user invoke bash unknowingly. A better solution is to
-// require the caller to always use absolute paths
+//DEPRECATED
+// This will cause an API break. I now think calling sh_expand() inside of
+// full_file_read() is a mistake. It's prone to let the user invoke bash
+// unknowingly. A better solution is to require the caller to always use
+// absolute paths.
 //
 // We should also allow the caller to get the length of the file by default, and
 // support NULL if they don't care about it.
 //
 // Changing this causes an API break so for now we create this wrapper, but we
-// should update this everywhere, then remove the wrapper.
+// should replace
+//
+//   full_file_read(pool, path) -> full_file_read_full(pool, path, NULL, false)
+//
+// A quick fix is to uncomment the following wrapper, but the real solution is
+// to perform the refactoring above so the code does not assume sh_expand() will
+// be called when loading the file.
+//
 //:sh_expand_was_a_bad_idea
-char* full_file_read (mem_pool_t *pool, const char *path)
-{
-    return full_file_read_full (pool, path, NULL, true);
-}
+//char* full_file_read (mem_pool_t *pool, const char *path)
+//{
+//    return full_file_read_full (pool, path, NULL, true);
+//}
 
 char* full_file_read_prefix (mem_pool_t *out_pool, const char *path, char **prefix, int len)
 {
@@ -2688,49 +2698,54 @@ char* full_file_read_prefix (mem_pool_t *out_pool, const char *path, char **pref
     return retval;
 }
 
-bool path_exists (char *path)
-{
-    bool retval = true;
-    char *dir_path = sh_expand (path, NULL);
+//DEPRECATED
+//:sh_expand_was_a_bad_idea
+//bool path_exists (char *path)
+//{
+//    bool retval = true;
+//    char *dir_path = sh_expand (path, NULL);
+//
+//    struct stat st;
+//    int status;
+//    if ((status = stat(dir_path, &st)) == -1) {
+//        retval = false;
+//        if (errno != ENOENT) {
+//            printf ("Error checking existance of %s: %s\n", path, strerror(errno));
+//        }
+//    }
+//    free (dir_path);
+//    return retval;
+//}
 
-    struct stat st;
-    int status;
-    if ((status = stat(dir_path, &st)) == -1) {
-        retval = false;
-        if (errno != ENOENT) {
-            printf ("Error checking existance of %s: %s\n", path, strerror(errno));
-        }
-    }
-    free (dir_path);
-    return retval;
-}
+//DEPRECATED
+//:sh_expand_was_a_bad_idea
+//bool dir_exists (char *path)
+//{
+//    bool retval = true;
+//    char *dir_path = sh_expand (path, NULL);
+//
+//    struct stat st;
+//    int status;
+//    if ((status = stat(dir_path, &st)) == -1) {
+//        retval = false;
+//        if (errno != ENOENT) {
+//            printf ("Error checking existance of %s: %s\n", path, strerror(errno));
+//        }
+//
+//    } else {
+//        if (!S_ISDIR(st.st_mode)) {
+//            return false;
+//        }
+//    }
+//
+//    free (dir_path);
+//    return retval;
+//}
 
-bool dir_exists (char *path)
-{
-    bool retval = true;
-    char *dir_path = sh_expand (path, NULL);
-
-    struct stat st;
-    int status;
-    if ((status = stat(dir_path, &st)) == -1) {
-        retval = false;
-        if (errno != ENOENT) {
-            printf ("Error checking existance of %s: %s\n", path, strerror(errno));
-        }
-
-    } else {
-        if (!S_ISDIR(st.st_mode)) {
-            return false;
-        }
-    }
-
-    free (dir_path);
-    return retval;
-}
-
-// TODO: Calling sh_expand() turns out to be a very bad idea, because it's very
+// TODO: Always calling sh_expand() turns out to be a very bad idea, because it's very
 // common to have paths that contain () in them. I think a better default is to
-// just assume paths are absolute at this point.
+// just assume paths are absolute at this point. Users can call sh_expand()
+// explicitly but we don't hide that inside of these calls.
 //:sh_expand_was_a_bad_idea
 bool path_exists_no_sh_expand (char *path)
 {
@@ -2935,9 +2950,9 @@ char* change_extension (mem_pool_t *pool, char *path, char *new_ext)
     return res;
 }
 
-// NOTE: This correctly handles a filename like hola.autosave.repl where there
-// are multiple parts that would look like an extensions. Only the last one will
-// be removed.
+// NOTE: This correctly handles a filename like hi.autosave.repl where there are
+// multiple parts that would look like an extensions. Only the last one will be
+// removed.
 char* remove_extension (mem_pool_t *pool, char *path)
 {
     size_t end_pos = strlen(path)-1;
@@ -3320,7 +3335,7 @@ head;                                                        \
 // This requires _end pointer.
 // TODO: I'm not sure this is the right way of making the _end pointer
 // requirement optional. It's very easy to forget to use the right POP macro
-// version wnd mess up everything. I wish there was a way to conditionally add
+// version and mess up everything. I wish there was a way to conditionally add
 // or remove code if a symbols exists or not in the context.
 #define LINKED_LIST_POP_END(head)                            \
 head;                                                        \
@@ -3467,15 +3482,32 @@ _linked_list_sort_implementation(FUNCNAME,TYPE,NEXT_FIELD)
 //
 ON_DESTROY_CALLBACK (pooled_free_call)
 {
-    free (clsr);
+    free (*(void**)clsr);
 }
 
-#define DYNAMIC_ARRAY_INIT(pool, head_name)             \
-    mem_pool_push_cb(pool, pooled_free_call, head_name)
+#define DYNAMIC_ARRAY_DEFINE(type, name)             \
+    type *name;                                      \
+    int name ## _len;                                \
+    int name ## _size
 
-// TODO: Should we get this as an argument of each macro that can initialize the
-// array?.
+#define DYNAMIC_ARRAY_REALLOC(head_name,new_size)           \
+    if (new_size != 0) {                                    \
+        void *new_head =                                    \
+            realloc(head_name, new_size*sizeof(*head_name));\
+        if (new_head) {                                     \
+            head_name = new_head;                           \
+            head_name ## _size = new_size;                  \
+        }                                                   \
+    }
+
 #define DYNAMIC_ARRAY_INITIAL_SIZE 50
+
+#define DYNAMIC_ARRAY_INIT(pool,head_name,initial_size)                                 \
+{                                                                                       \
+    mem_pool_push_cb(pool, pooled_free_call, &head_name);                               \
+    head_name ## _size = initial_size == 0 ? DYNAMIC_ARRAY_INITIAL_SIZE : initial_size; \
+    DYNAMIC_ARRAY_REALLOC (head_name, head_name ## _size);                              \
+}
 
 #define DYNAMIC_ARRAY_APPEND(head_name,element)                             \
 {                                                                           \
@@ -3486,17 +3518,33 @@ ON_DESTROY_CALLBACK (pooled_free_call)
         new_size = 2*(head_name ## _size);                                  \
     }                                                                       \
                                                                             \
-    if (new_size != 0) {                                                    \
-        void *new_head =                                                    \
-            realloc(head_name, new_size*sizeof(head_name));                 \
-        if (new_head) {                                                     \
-            head_name = new_head;                                           \
-            head_name ## _size = new_size;                                  \
-        }                                                                   \
-    }                                                                       \
+    DYNAMIC_ARRAY_REALLOC(head_name, new_size)                              \
                                                                             \
     (head_name)[(head_name ## _len)++] = element;                           \
 }
+
+// In some cases we can't assign to a type by assigning to it, for example in
+// the case we are storing string_t structures, if we assign an empty string the
+// allocated internal memory pointer will be leaked. In such cases we just want
+// to get a pointer to the appended value and then the caller will handle what
+// to do next.
+//
+// CAUTION: Do not store the pointers returned by this persistently! When the
+// array grows and is reallocated the pointer will become invalid!.
+// TODO: This is probably even useless, in cases where something like this is
+// necessary, we should really be using linked lists.
+#define DYNAMIC_ARRAY_APPEND_GET(head_name, type, name)                     \
+{                                                                           \
+    size_t new_size = 0;                                                    \
+    if (0 == head_name ## _size) {                                          \
+        new_size = DYNAMIC_ARRAY_INITIAL_SIZE;                              \
+    } else if (head_name ## _size == head_name ## _len) {                   \
+        new_size = 2*(head_name ## _size);                                  \
+    }                                                                       \
+                                                                            \
+    DYNAMIC_ARRAY_REALLOC(head_name, new_size)                              \
+}                                                                           \
+type name = (head_name) + ((head_name ## _len)++);
 
 #define COMMON_H
 #endif
