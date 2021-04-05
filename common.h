@@ -2698,6 +2698,26 @@ char* full_file_read_prefix (mem_pool_t *out_pool, const char *path, char **pref
     return retval;
 }
 
+// TODO: Always calling sh_expand() turns out to be a very bad idea, because it's very
+// common to have paths that contain () in them. I think a better default is to
+// just assume paths are absolute at this point. Users can call sh_expand()
+// explicitly but we don't hide that inside of these calls.
+//:sh_expand_was_a_bad_idea
+bool path_exists_no_sh_expand (char *path)
+{
+    bool retval = true;
+
+    struct stat st;
+    int status;
+    if ((status = stat(path, &st)) == -1) {
+        retval = false;
+        if (errno != ENOENT) {
+            printf ("Error checking existance of %s: %s\n", path, strerror(errno));
+        }
+    }
+    return retval;
+}
+
 //DEPRECATED
 //:sh_expand_was_a_bad_idea
 //bool path_exists (char *path)
@@ -2716,6 +2736,28 @@ char* full_file_read_prefix (mem_pool_t *out_pool, const char *path, char **pref
 //    free (dir_path);
 //    return retval;
 //}
+
+//:sh_expand_was_a_bad_idea
+bool dir_exists_no_sh_expand (char *path)
+{
+    bool retval = true;
+
+    struct stat st;
+    int status;
+    if ((status = stat(path, &st)) == -1) {
+        retval = false;
+        if (errno != ENOENT) {
+            printf ("Error checking existance of %s: %s\n", path, strerror(errno));
+        }
+
+    } else {
+        if (!S_ISDIR(st.st_mode)) {
+            return false;
+        }
+    }
+
+    return retval;
+}
 
 //DEPRECATED
 //:sh_expand_was_a_bad_idea
@@ -2742,70 +2784,50 @@ char* full_file_read_prefix (mem_pool_t *out_pool, const char *path, char **pref
 //    return retval;
 //}
 
-// TODO: Always calling sh_expand() turns out to be a very bad idea, because it's very
-// common to have paths that contain () in them. I think a better default is to
-// just assume paths are absolute at this point. Users can call sh_expand()
-// explicitly but we don't hide that inside of these calls.
-//:sh_expand_was_a_bad_idea
-bool path_exists_no_sh_expand (char *path)
-{
-    bool retval = true;
-
-    struct stat st;
-    int status;
-    if ((status = stat(path, &st)) == -1) {
-        retval = false;
-        if (errno != ENOENT) {
-            printf ("Error checking existance of %s: %s\n", path, strerror(errno));
-        }
-    }
-    return retval;
-}
-
-//:sh_expand_was_a_bad_idea
-bool dir_exists_no_sh_expand (char *path)
-{
-    bool retval = true;
-
-    struct stat st;
-    int status;
-    if ((status = stat(path, &st)) == -1) {
-        retval = false;
-        if (errno != ENOENT) {
-            printf ("Error checking existance of %s: %s\n", path, strerror(errno));
-        }
-
-    } else {
-        if (!S_ISDIR(st.st_mode)) {
-            return false;
-        }
-    }
-
-    return retval;
-}
-
 // NOTE: Returns false if there was an error creating the directory.
-bool ensure_dir_exists (char *path)
+bool ensure_dir_exists_no_sh_expand (char *path)
 {
     bool retval = true;
-    char *dir_path = sh_expand (path, NULL);
 
     struct stat st;
     int success = 0;
-    if (stat(dir_path, &st) == -1 && errno == ENOENT) {
-        success = mkdir (dir_path, 0777);
+    if (stat(path, &st) == -1 && errno == ENOENT) {
+        success = mkdir (path, 0777);
     }
 
     if (success == -1) {
         char *expl = strerror (errno);
-        printf ("Could not create %s: %s\n", dir_path, expl);
+        printf ("Could not create %s: %s\n", path, expl);
         free (expl);
         retval = false;
     }
 
-    free (dir_path);
     return retval;
 }
+
+//DEPRECATED
+//:sh_expand_was_a_bad_idea
+//bool ensure_dir_exists (char *path)
+//{
+//    bool retval = true;
+//    char *dir_path = sh_expand (path, NULL);
+//
+//    struct stat st;
+//    int success = 0;
+//    if (stat(dir_path, &st) == -1 && errno == ENOENT) {
+//        success = mkdir (dir_path, 0777);
+//    }
+//
+//    if (success == -1) {
+//        char *expl = strerror (errno);
+//        printf ("Could not create %s: %s\n", dir_path, expl);
+//        free (expl);
+//        retval = false;
+//    }
+//
+//    free (dir_path);
+//    return retval;
+//}
 
 // Checks if path exists (either as a file or directory). If it doesn't it tries
 // to create all directories required for it to exist. If path ends in / then
