@@ -550,6 +550,7 @@ void printf_indented (char *str, int num_spaces)
 
 char str_last (string_t *str)
 {
+    assert (str_len(str) > 0);
     return str_data(str)[str_len(str)-1];
 }
 
@@ -691,7 +692,7 @@ bool is_end_of_line (const char *c)
 // Set POSIX locale while storing the previous one. Useful while calling strtod
 // and you know the decimal separator will always be '.', and you don't want it
 // to break if the user changes locale.
-// NOTE: Must be followed by a call to end_posix_locale() to avoid memory leaks
+// NOTE: Must be followed by a call to restore_locale() to avoid memory leaks
 char* begin_posix_locale ()
 {
     char *old_locale = NULL;
@@ -703,7 +704,7 @@ char* begin_posix_locale ()
 }
 
 // Restore the previous locale returned by begin_posix_locale
-void end_posix_locale (char *old_locale)
+void restore_locale (char *old_locale)
 {
     setlocale (LC_ALL, old_locale);
     free (old_locale);
@@ -2440,7 +2441,18 @@ void flatten_array (mem_pool_t *pool, uint32_t num_arrs, size_t e_size,
 // Expand _str_ as bash would, allocate it in _pool_ or heap. 
 // NOTE: $(<cmd>) and `<cmd>` work but don't get too crazy, this spawns /bin/sh
 // and a subprocess. Using env vars like $HOME, or ~/ doesn't.
-char* sh_expand (const char *str, mem_pool_t *pool)
+// CAUTION: This is dangerous if called on untrusted user input. It will run
+// arbitrary shell commands.
+// CAUTION: It is a VERY bad idea to hide calls to this from users of an API.
+// Mainly for 2 reasons:
+//  - It's unsafe by default.
+//  - It's common to have paths with () characters in them (i.e. duplicate
+//    downloads).
+// For some time all file manipulation functions started with a call to
+// sh_expand(). Don't do that again!!. In fact, try to use sh_expand() as little
+// as possible. When a user may input a path with ~, better resolve it using
+// resolve_user_path().
+char* sh_expand (char *str, mem_pool_t *pool)
 {
     wordexp_t out;
     wordexp (str, &out, 0);
@@ -2449,34 +2461,52 @@ char* sh_expand (const char *str, mem_pool_t *pool)
     return res;
 }
 
-char* abs_path (const char *path, mem_pool_t *pool)
+static inline
+char sys_path_sep ()
 {
-    mem_pool_t l_pool = {0};
-
-    char *expanded_path = sh_expand (path, &l_pool);
-
-    char *absolute_path_m = realpath (expanded_path, NULL);
-    if (absolute_path_m == NULL) {
-        // NOTE: realpath() fails if the file does not exist.
-        printf ("Error: %s (%d)\n", strerror(errno), errno);
-    }
-    char *absolute_path = pom_strdup (pool, absolute_path_m);
-    free (absolute_path_m);
-
-    mem_pool_destroy (&l_pool);
-
-    return absolute_path;
+    // TODO: Actually return the system's path separator.
+    return '/';
 }
 
-//:sh_expand_was_a_bad_idea
-char* abs_path_no_sh_expand (const char *path, mem_pool_t *pool)
+char *resolve_user_path (char *path, mem_pool_t *pool)
+{
+    assert (path != NULL);
+
+    char *result;
+    if (path[0] == '~' && (strlen(path) == 1 || path[1] == sys_path_sep())) {
+        char *home_path = getenv ("HOME");
+        result = pom_push_size (pool, strlen (home_path) + strlen (path));
+        strcpy (result, home_path);
+        strcat (result, path + 1);
+
+    } else {
+        result = pom_strdup (pool, path);
+    }
+
+    return result;
+}
+
+// It's common to want absolute paths before we start a series of path
+// manipulation calls, so this is likely to be the first function to be called
+// on a string that represents a path. Because real path needs to traverse
+// folders to resolve "..", this fails if the path does not exist. Then... what
+// is the point of having separate *_exists() functions?. I think the useful
+// thing about those is for times when we already know a path is absolute and we
+// need to make multiple tests. But for a single sequence of abs_path() followed
+// by path_exists(), we can use abs_path()'s result.
+//
+// TODO: This function should probably also set a boolean value that tells the
+// caller if there was a file not found error.
+char* abs_path (char *path, mem_pool_t *pool)
 {
     mem_pool_t l_pool = {0};
 
-    char *absolute_path_m = realpath (path, NULL);
+    char *user_path = resolve_user_path (path, &l_pool);
+
+    char *absolute_path_m = realpath (user_path, NULL);
     if (absolute_path_m == NULL) {
         // NOTE: realpath() fails if the file does not exist.
-        printf ("Error: %s (%d)\n", strerror(errno), errno);
+        //printf ("Error: %s (%d)\n", strerror(errno), errno);
     }
     char *absolute_path = pom_strdup (pool, absolute_path_m);
     free (absolute_path_m);
@@ -2508,11 +2538,10 @@ void file_read (int file, void *pos,  ssize_t size)
 bool full_file_write (const void *data, ssize_t size, const char *path)
 {
     bool failed = false;
-    char *dir_path = sh_expand (path, NULL);
 
     // TODO: If writing fails, we will leave a blank file behind. We should make
     // a backup in case things go wrong.
-    int file = open (dir_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    int file = open (path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (file != -1) {
         int bytes_written = 0;
         do {
@@ -2535,23 +2564,13 @@ bool full_file_write (const void *data, ssize_t size, const char *path)
         }
     }
 
-    free (dir_path);
     return failed;
 }
 
-// TODO: Go back to the more user friendly name full_file_read() instead of
-// full_file_read_full() and remove the do_sh_expand parameter defaulting to
-// false. This needs to be done after we are sure no applications are expecting
-// sh_expand() to be called here.
-char* full_file_read_full (mem_pool_t *pool, const char *path, uint64_t *len, bool do_sh_expand)
+char* full_file_read (mem_pool_t *pool, const char *path, uint64_t *len)
 {
     bool success = true;
-    const char *dir_path = path;
     char *expanded_path = NULL;
-    if (do_sh_expand) {
-        expanded_path = sh_expand (path, NULL);
-        dir_path = expanded_path;
-    }
 
     mem_pool_marker_t mrk;
     if (pool != NULL) {
@@ -2560,10 +2579,10 @@ char* full_file_read_full (mem_pool_t *pool, const char *path, uint64_t *len, bo
 
     char *loaded_data = NULL;
     struct stat st;
-    if (stat(dir_path, &st) == 0) {
+    if (stat(path, &st) == 0) {
         loaded_data = (char*)pom_push_size (pool, st.st_size + 1);
 
-        int file = open (dir_path, O_RDONLY);
+        int file = open (path, O_RDONLY);
         if (file != -1) {
             int bytes_read = 0;
             do {
@@ -2609,102 +2628,10 @@ char* full_file_read_full (mem_pool_t *pool, const char *path, uint64_t *len, bo
     return retval;
 }
 
-//DEPRECATED
-// This will cause an API break. I now think calling sh_expand() inside of
-// full_file_read() is a mistake. It's prone to let the user invoke bash
-// unknowingly. A better solution is to require the caller to always use
-// absolute paths.
-//
-// We should also allow the caller to get the length of the file by default, and
-// support NULL if they don't care about it.
-//
-// Changing this causes an API break so for now we create this wrapper, but we
-// should replace
-//
-//   full_file_read(pool, path) -> full_file_read_full(pool, path, NULL, false)
-//
-// A quick fix is to uncomment the following wrapper, but the real solution is
-// to perform the refactoring above so the code does not assume sh_expand() will
-// be called when loading the file.
-//
-//:sh_expand_was_a_bad_idea
-//char* full_file_read (mem_pool_t *pool, const char *path)
-//{
-//    return full_file_read_full (pool, path, NULL, true);
-//}
-
-char* full_file_read_prefix (mem_pool_t *out_pool, const char *path, char **prefix, int len)
+bool path_exists (char *path)
 {
-    mem_pool_t pool = {0};
-    string_t pfx_s = {0};
-    string_t path_s = str_new (path);
-    char *dir_path = sh_expand (path, &pool);
+    if (path == NULL) return false;
 
-    int status, i = 0;
-    struct stat st;
-    while ((status = (stat(dir_path, &st) == -1)) && i < len) {
-        if (errno == ENOENT && prefix != NULL && *prefix != NULL) {
-            str_set (&pfx_s, prefix[i]);
-            assert (str_last(&pfx_s) == '/');
-            str_cat (&pfx_s, &path_s);
-            dir_path = sh_expand (str_data(&pfx_s), &pool);
-            i++;
-        } else {
-            break;
-        }
-    }
-    str_free (&pfx_s);
-    str_free (&path_s);
-
-    mem_pool_marker_t mrk;
-    if (out_pool != NULL) {
-        mrk = mem_pool_begin_temporary_memory (out_pool);
-    }
-
-    bool success = true;
-    char *loaded_data = NULL;
-    if (status == 0) {
-        loaded_data = (char*)pom_push_size (out_pool, st.st_size + 1);
-
-        int file = open (dir_path, O_RDONLY);
-        int bytes_read = 0;
-        do {
-            int status = read (file, loaded_data+bytes_read, st.st_size-bytes_read);
-            if (status == -1) {
-                success = false;
-                printf ("Error reading %s: %s\n", path, strerror(errno));
-                break;
-            }
-            bytes_read += status;
-        } while (bytes_read != st.st_size);
-        loaded_data[st.st_size] = '\0';
-    } else {
-        success = false;
-        printf ("Could not locate %s in any folder.\n", path);
-    }
-
-    char *retval = NULL;
-    if (success) {
-        retval = loaded_data;
-    } else if (loaded_data != NULL) {
-        if (out_pool != NULL) {
-            mem_pool_end_temporary_memory (mrk);
-        } else {
-            free (loaded_data);
-        }
-    }
-
-    mem_pool_destroy (&pool);
-    return retval;
-}
-
-// TODO: Always calling sh_expand() turns out to be a very bad idea, because it's very
-// common to have paths that contain () in them. I think a better default is to
-// just assume paths are absolute at this point. Users can call sh_expand()
-// explicitly but we don't hide that inside of these calls.
-//:sh_expand_was_a_bad_idea
-bool path_exists_no_sh_expand (char *path)
-{
     bool retval = true;
 
     struct stat st;
@@ -2718,28 +2645,10 @@ bool path_exists_no_sh_expand (char *path)
     return retval;
 }
 
-//DEPRECATED
-//:sh_expand_was_a_bad_idea
-//bool path_exists (char *path)
-//{
-//    bool retval = true;
-//    char *dir_path = sh_expand (path, NULL);
-//
-//    struct stat st;
-//    int status;
-//    if ((status = stat(dir_path, &st)) == -1) {
-//        retval = false;
-//        if (errno != ENOENT) {
-//            printf ("Error checking existance of %s: %s\n", path, strerror(errno));
-//        }
-//    }
-//    free (dir_path);
-//    return retval;
-//}
-
-//:sh_expand_was_a_bad_idea
-bool dir_exists_no_sh_expand (char *path)
+bool dir_exists (char *path)
 {
+    if (path == NULL) return false;
+
     bool retval = true;
 
     struct stat st;
@@ -2759,33 +2668,8 @@ bool dir_exists_no_sh_expand (char *path)
     return retval;
 }
 
-//DEPRECATED
-//:sh_expand_was_a_bad_idea
-//bool dir_exists (char *path)
-//{
-//    bool retval = true;
-//    char *dir_path = sh_expand (path, NULL);
-//
-//    struct stat st;
-//    int status;
-//    if ((status = stat(dir_path, &st)) == -1) {
-//        retval = false;
-//        if (errno != ENOENT) {
-//            printf ("Error checking existance of %s: %s\n", path, strerror(errno));
-//        }
-//
-//    } else {
-//        if (!S_ISDIR(st.st_mode)) {
-//            return false;
-//        }
-//    }
-//
-//    free (dir_path);
-//    return retval;
-//}
-
 // NOTE: Returns false if there was an error creating the directory.
-bool ensure_dir_exists_no_sh_expand (char *path)
+bool ensure_dir_exists (char *path)
 {
     bool retval = true;
 
@@ -2805,46 +2689,21 @@ bool ensure_dir_exists_no_sh_expand (char *path)
     return retval;
 }
 
-//DEPRECATED
-//:sh_expand_was_a_bad_idea
-//bool ensure_dir_exists (char *path)
-//{
-//    bool retval = true;
-//    char *dir_path = sh_expand (path, NULL);
-//
-//    struct stat st;
-//    int success = 0;
-//    if (stat(dir_path, &st) == -1 && errno == ENOENT) {
-//        success = mkdir (dir_path, 0777);
-//    }
-//
-//    if (success == -1) {
-//        char *expl = strerror (errno);
-//        printf ("Could not create %s: %s\n", dir_path, expl);
-//        free (expl);
-//        retval = false;
-//    }
-//
-//    free (dir_path);
-//    return retval;
-//}
-
 // Checks if path exists (either as a file or directory). If it doesn't it tries
 // to create all directories required for it to exist. If path ends in / then
 // all components are checked, otherwise the last part after / is assumed to be
 // a filename and is not created as a directory.
-bool ensure_path_exists (const char *path)
+bool ensure_path_exists (char *path)
 {
     bool success = true;
-    char *dir_path = sh_expand (path, NULL);
 
-    char *c = dir_path;
+    char *c = path;
     if (*c == '/') {
         c++;
     }
 
     struct stat st;
-    if (stat(dir_path, &st) == -1) {
+    if (stat(path, &st) == -1) {
         if (errno == ENOENT) {
             while (*c && success) {
                 while (*c && *c != '/') {
@@ -2853,10 +2712,10 @@ bool ensure_path_exists (const char *path)
 
                 if (*c != '\0') {
                     *c = '\0';
-                    if (stat(dir_path, &st) == -1 && errno == ENOENT) {
-                        if (mkdir (dir_path, 0777) == -1) {
+                    if (stat(path, &st) == -1 && errno == ENOENT) {
+                        if (mkdir (path, 0777) == -1) {
                             success = false;
-                            printf ("Error creating %s: %s\n", dir_path, strerror (errno));
+                            printf ("Error creating %s: %s\n", path, strerror (errno));
                         }
                     }
 
@@ -2873,7 +2732,6 @@ bool ensure_path_exists (const char *path)
         // file or directory?.
     }
 
-    free (dir_path);
     return success;
 }
 
@@ -3405,9 +3263,27 @@ type *new_node;                                              \
     LINKED_LIST_PUSH(head_name,new_node)                     \
 }
 
+// This macro requires the passed type parameter to be a pointer. I had another
+// version of this macro that turned a normal type to a pointer type internally
+// (appended *). I found I always passed a pointer type so I was getting a
+// double pointer in the end. The best mnemonic I've found is to think of this
+// macro like a foreach loop in other languages like java where you declare the
+// full type of the variable that will be iterated on. This old macro has the
+// same issue as *_ptr typedefs some people use.
+//
+// TODO: Can we check at compile time that type is a pointer? Right now if users
+// forget the *, they get a long list of errors. Maybe a static assert would
+// show a nicer error message?.
+#define LINKED_LIST_FOR(type, varname,headname)              \
+type varname = headname;                                     \
+for (; varname != NULL; varname = varname->next)
+
+/*
+//@DEPRECATED
 #define LINKED_LIST_FOR(type, varname,headname)              \
 type *varname = headname;                                    \
 for (; varname != NULL; varname = varname->next)
+*/
 
 // Linked list sorting
 //

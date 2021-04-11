@@ -673,7 +673,7 @@ bool jpg_reader_init (struct jpg_reader_t *rdr, char *path, bool from_file)
         rdr->jump_to = jpg_file_reader_jump_to;
 
     } else {
-        rdr->data = (uint8_t*)full_file_read_full (&rdr->pool, path, &rdr->file_size, false);
+        rdr->data = (uint8_t*)full_file_read (&rdr->pool, path, &rdr->file_size);
         rdr->pos = rdr->data;
 
         rdr->read_bytes = jpg_memory_reader_read_bytes;

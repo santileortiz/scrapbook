@@ -427,14 +427,14 @@ struct file_header_t* collect_jpg_from_cli (mem_pool_t *pool, char **paths, int 
     uint64_t file_cnt = 0;
     printf (ECMA_BOLD("Creating file list\n"));
     for (int i=0; i<paths_len; i++) {
-        char *path = abs_path_no_sh_expand (paths[i], NULL);
+        char *path = abs_path (paths[i], NULL);
         printf ("PATH: %s\n", path);
-        if (dir_exists_no_sh_expand(path)) {
+        if (dir_exists (path)) {
             printf ("%s/**\n", path);
             iterate_dir (path, collect_jpg_cb, &clsr);
             cli_status_end ();
 
-        } else if (path_exists_no_sh_expand(path)) {
+        } else if (path_exists (path)) {
             printf ("%s\n", path);
             LINKED_LIST_PUSH_NEW (pool, struct file_header_t, clsr.files, new_node);
             str_set (&new_node->path, path);
@@ -529,8 +529,8 @@ void find_file_duplicates (struct scrapbook_t *sb, struct file_header_t *files, 
             // memory for each comparison. Ideally we should have a bucket size
             // limit as a parameter and preemptively execute the correct
             // algorithm, not wait until we run out of memory.
-            LINKED_LIST_FOR (struct file_header_t, curr_file, curr_bucket->strings) {
-                curr_file->data = full_file_read_full (&pool_l, str_data(&curr_file->path), &curr_file->size, false);
+            LINKED_LIST_FOR (struct file_header_t*, curr_file, curr_bucket->strings) {
+                curr_file->data = full_file_read (&pool_l, str_data(&curr_file->path), &curr_file->size);
                 curr_file->status = FILE_HEADER_LOADED;
             }
 
@@ -829,7 +829,7 @@ int main (int argc, char **argv)
         mem_pool_t pool = {0};
 
         uint64_t file_len;
-        char *file = full_file_read_full (&pool, argument, &file_len, false);
+        char *file = full_file_read (&pool, argument, &file_len);
         printf ("file hash: ");
         printf ("%lu\n", hash_64 (file, file_len));
 
