@@ -2775,39 +2775,51 @@ ITERATE_DIR_CB (iterate_dir_printf)
     printf ("%s\n", fname);
 }
 
-void iterate_dir_helper (string_t *path,  iterate_dir_cb_t *callback, void *data)
+void iterate_dir_helper (string_t *path,  iterate_dir_cb_t *callback, void *data, bool include_hidden)
 {
     int path_len = str_len (path);
 
     struct stat st;
     callback (str_data(path), true, data);
     DIR *d = opendir (str_data(path));
-    struct dirent *entry_info;
-    while (read_dir (d, &entry_info)) {
-        if (entry_info->d_name[0] != '.') { // file is not hidden
-            str_put_c (path, path_len, entry_info->d_name);
-            if (stat(str_data(path), &st) == 0) {
-                if (S_ISREG(st.st_mode)) {
-                    callback (str_data(path), false, data);
+    if (d != NULL) {
+        struct dirent *entry_info;
+        while (read_dir (d, &entry_info)) {
+            bool is_current = false;
+            if (entry_info->d_name[0] == '.' && strlen(entry_info->d_name) == 1) is_current = true;
 
-                } else if (S_ISDIR(st.st_mode)) {
-                    str_cat_c (path, "/");
-                    iterate_dir_helper (path, callback, data);
+            bool is_parent = false;
+            if (entry_info->d_name[0] == '.' && entry_info->d_name[1] == '.' && strlen(entry_info->d_name) == 2) is_parent = true;
+
+            if ((include_hidden && !is_current && !is_parent) || entry_info->d_name[0] != '.') { // file is not hidden
+                str_put_c (path, path_len, entry_info->d_name);
+                if (stat(str_data(path), &st) == 0) {
+                    if (S_ISREG(st.st_mode)) {
+                        callback (str_data(path), false, data);
+
+                    } else if (S_ISDIR(st.st_mode)) {
+                        str_cat_c (path, "/");
+                        iterate_dir_helper (path, callback, data, include_hidden);
+                    }
                 }
             }
         }
+        closedir (d);
+
+    } else {
+        printf ("error: can't open directory '%s'\n", str_data(path));
     }
-    closedir (d);
 }
 
-void iterate_dir (char *path, iterate_dir_cb_t *callback, void *data)
+#define iterate_dir(path,callback,data) iterate_dir_full(path,callback,data,false)
+void iterate_dir_full (char *path, iterate_dir_cb_t *callback, void *data, bool include_hidden)
 {
     string_t path_str = str_new (path);
     if (str_last (&path_str) != '/') {
         str_cat_c (&path_str, "/");
     }
 
-    iterate_dir_helper (&path_str, callback, data);
+    iterate_dir_helper (&path_str, callback, data, include_hidden);
 
     str_free (&path_str);
 }
