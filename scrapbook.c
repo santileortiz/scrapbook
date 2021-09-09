@@ -316,17 +316,20 @@ struct collect_jpg_cb_clsr_t {
     mem_pool_t *pool;
     uint64_t count;
     struct file_header_t *files;
+    char *match_extension;
 };
 
-ITERATE_DIR_CB (collect_jpg_cb)
+ITERATE_DIR_CB (collect_files_cb)
 {
     struct collect_jpg_cb_clsr_t *clsr = (struct collect_jpg_cb_clsr_t*) data;
 
     char *extension = get_extension (fname);
-    if (!is_dir && extension != NULL && strncasecmp (extension, "jpg", 3) == 0) {
-        LINKED_LIST_PUSH_NEW (clsr->pool, struct file_header_t, clsr->files, new_node);
-        str_set (&new_node->path, fname);
-        clsr->count++;
+    if (!is_dir) {
+        if (clsr->match_extension == NULL || (extension != NULL && strncasecmp (extension, clsr->match_extension, 3) == 0)) {
+            LINKED_LIST_PUSH_NEW (clsr->pool, struct file_header_t, clsr->files, new_node);
+            str_set (&new_node->path, fname);
+            clsr->count++;
+        }
     }
     cli_status ("Files collected: ", clsr->count);
 }
@@ -419,9 +422,10 @@ void print_bucket_list_path (struct file_bucket_t *bucket_lst)
 // Looks up directory names passed as cli arguments and recursiveley collects
 // all image files inside of them. If a file name is passsed, the absolute path
 // to the file is appended to the resulting list.
-struct file_header_t* collect_jpg_from_cli (mem_pool_t *pool, char **paths, int paths_len)
+struct file_header_t* collect_files_from_cli (mem_pool_t *pool, char *extension, char **paths, int paths_len)
 {
     struct collect_jpg_cb_clsr_t clsr = {0};
+    clsr.match_extension = extension;
     clsr.pool = pool;
 
     uint64_t file_cnt = 0;
@@ -431,7 +435,7 @@ struct file_header_t* collect_jpg_from_cli (mem_pool_t *pool, char **paths, int 
         printf ("PATH: %s\n", path);
         if (dir_exists (path)) {
             printf ("%s/**\n", path);
-            iterate_dir (path, collect_jpg_cb, &clsr);
+            iterate_dir_full (path, collect_files_cb, &clsr, true);
             cli_status_end ();
 
         } else if (path_exists (path)) {
@@ -454,14 +458,19 @@ struct file_header_t* collect_jpg_from_cli (mem_pool_t *pool, char **paths, int 
     return clsr.files;
 }
 
+struct file_header_t* collect_jpg_from_cli (mem_pool_t *pool, char **paths, int paths_len)
+{
+    return collect_files_from_cli (pool, "jpg", paths, paths_len);
+}
+
 // Finds duplicates that are identical at file level.
 //
 // When a file has multiple duplicates we automatically decide which one to
 // remove according to the criteria  of duplicate_file_name_cmp().  Any path
 // that contains remove_substr as substring will be prefered for removal over
 // one that doesn't contaín it.
-void find_file_duplicates (struct scrapbook_t *sb, struct file_header_t *files, char *remove_substr,
-                           char* tentative_buckets_fname, char* final_buckets_fname, char* rm_cmd_fname)
+void find_file_duplicates (struct scrapbook_t *sb, struct file_header_t *files, char *remove_substr, char *removal_filter,
+                           char* tentative_buckets_fname, char* final_buckets_fname, char* rm_cmd_fname, bool is_dry_run)
 {
     struct file_header_t *curr_str = files;
     while (curr_str != NULL) {
@@ -631,18 +640,46 @@ void find_file_duplicates (struct scrapbook_t *sb, struct file_header_t *files, 
 
         printf ("Unique files: %ld\n", num_buckets);
         printf ("Total duplicate files: %ld\n", exact_duplicates_len);
+        printf ("\n");
 
         //print_bucket_list_fnames (exact_duplicates);
         //print_bucket_list_path (exact_duplicates);
 
-        // This will print a huge rm command that will delete all duplicates.
-        printf ("rm ");
-        struct file_header_t *curr_str = files_to_remove;
-        while (curr_str != NULL) {
-            printf ("'%s' ", str_data(&curr_str->path));
-            curr_str = curr_str->next;
+        // Print the list of files to be removed
+        {
+            struct file_header_t *curr_str = files_to_remove;
+            while (curr_str != NULL) {
+                if (removal_filter == NULL || strstr (str_data(&curr_str->path), removal_filter) == str_data(&curr_str->path)) {
+                    printf ("D '%s'\n", str_data(&curr_str->path));
+                }
+                curr_str = curr_str->next;
+            }
+            printf ("\n");
         }
-        printf ("\n");
+
+        // Actually remove all duplicate files
+        if (!is_dry_run) {
+            struct file_header_t *curr_str = files_to_remove;
+            while (curr_str != NULL) {
+                if (removal_filter == NULL || strstr (str_data(&curr_str->path), removal_filter) == str_data(&curr_str->path)) {
+                    unlink (str_data(&curr_str->path));
+                }
+                curr_str = curr_str->next;
+            }
+        }
+
+        // This will print a huge rm command that will delete all duplicates.
+        //{
+        //    printf ("rm ");
+        //    struct file_header_t *curr_str = files_to_remove;
+        //    while (curr_str != NULL) {
+        //        if (removal_filter == NULL || strstr (str_data(&curr_str->path), removal_filter) == str_data(&curr_str->path)) {
+        //            printf ("'%s' ", str_data(&curr_str->path));
+        //        }
+        //        curr_str = curr_str->next;
+        //    }
+        //    printf ("\n");
+        //}
 
         //printf ("mv ");
         //struct file_header_t *curr_str = files_to_remove;
@@ -816,7 +853,26 @@ void testing_function (struct scrapbook_t *sb, struct file_header_t *files)
 int main (int argc, char **argv)
 {
     struct scrapbook_t scrapbook = {0};
+    int paths_count = argc - 2;
+    char **paths = argv + 2;
+
     char *remove_substr = get_cli_arg_opt ("--prefer-removal-substr", argv, argc);
+    if (remove_substr != NULL) {
+        paths_count -= 2;
+        paths += 2;
+    }
+
+    char *removal_filter = get_cli_arg_opt ("--removal-filter", argv, argc);
+    if (removal_filter != NULL) {
+        paths_count -= 2;
+        paths += 2;
+    }
+
+    bool is_dry_run = get_cli_bool_opt ("--dry-run", argv, argc);
+    if (is_dry_run) {
+        paths_count -= 1;
+        paths += 1;
+    }
 
     char *argument = NULL;
     if ((argument = get_cli_arg_opt ("--jpeg-structure", argv, argc)) != NULL) {
@@ -857,9 +913,9 @@ int main (int argc, char **argv)
         testing_function (&scrapbook, images);
 
     } else if ((argument = get_cli_arg_opt ("--find-duplicates-file", argv, argc)) != NULL) {
-        struct file_header_t *images = collect_jpg_from_cli (&scrapbook.pool, argv+2, argc-2);
-        find_file_duplicates (&scrapbook, images, remove_substr,
-                              NULL, NULL, NULL);
+        struct file_header_t *images = collect_files_from_cli (&scrapbook.pool, NULL, paths, paths_count);
+        find_file_duplicates (&scrapbook, images, remove_substr, removal_filter,
+                              NULL, NULL, NULL, is_dry_run);
 
     } else if ((argument = get_cli_arg_opt ("--find-duplicates-image", argv, argc)) != NULL) {
         struct file_header_t *images = collect_jpg_from_cli (&scrapbook.pool, argv+2, argc-2);
