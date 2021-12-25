@@ -1,6 +1,8 @@
-import sys, subprocess, os, ast, shutil, platform, json, pickle
+import sys, subprocess, os, ast, shutil, platform, re, json, pickle, zipfile, shlex
 
 import importlib.util, inspect, pathlib, filecmp
+
+from enum import Enum
 
 """
 !!!!!!IMPOTRANT!!!!!
@@ -59,6 +61,9 @@ def get_user_functions():
     """
     keys = globals().copy().keys()
     return [(m,v) for m,v in get_functions() if m not in keys]
+
+def get_function_name():
+    return inspect.getouterframes(inspect.currentframe())[1].frame.f_code.co_name
 
 def user_function_exists(name):
     fun = None
@@ -119,6 +124,9 @@ def recommended_opt (s):
         res = opt_lst[0]
     return res
 
+def is_interactive():
+    return "i" in ex("echo $-", ret_stdout=True, echo=False)
+
 builtin_completions = []
 cli_completions = {}
 cli_bool_options = set()
@@ -131,7 +139,7 @@ def handle_tab_complete ():
     global cli_completions, builtin_completions
 
     # Check that the tab completion script is installed
-    if not check_completions ():
+    if not check_completions () and is_interactive():
         if get_cli_bool_opt('--install_completions'):
             print ('Installing tab completions...')
             ex ('cp mkpy/pymk.py {}'.format(get_completions_path()))
@@ -263,6 +271,15 @@ def get_cli_bool_opt(opts, has_argument=False, unique_option=False):
 
     return res
 
+def get_cli_persistent_toggle(name, enable, disable, default):
+    if get_cli_bool_opt(disable):
+        store(name, False)
+
+    if get_cli_bool_opt(enable):
+        store(name, True)
+
+    return store_get(name, default)
+
 # Deprecated
 # This implementation includes the function's name when there is no option
 # starting with '-', but when there is, then the function name is not returned.
@@ -318,17 +335,6 @@ def err (string, **kwargs):
 def ok (string, **kwargs):
     print ('\033[1m\033[92m{}\033[0m'.format(string), **kwargs)
 
-def get_user_str_vars ():
-    """
-    Returns a dictionary with global strings in module __main__.
-    """
-    var_list = inspect.getmembers(sys.modules['__main__'])
-    var_dict = {}
-    for v_name, v in var_list:
-        if type(v) == type(""):
-            var_dict[v_name] = v
-    return var_dict
-
 def pkg_config_libs (packages):
     return ex ('pkg-config --libs ' + ' '.join(packages), ret_stdout=True)
 
@@ -380,31 +386,78 @@ def set_echo_mode():
 def ex_escape (s):
     return s.replace ('\n', '').replace ('{', '{{').replace ('}','}}')
 
-def ex (cmd, no_stdout=False, ret_stdout=False, echo=True):
-    # NOTE: This fails if there are braces {} in cmd but the content is not a
-    # variable. If this is the case, escape the content that has braces using
-    # the ex_escape() function. This is required for things like awk scripts.
+def ex_bg (cmd, echo=True, cwd=None, log=None):
+    """
+    This does not invoke a full wrapping shell, this means shell syntax doesn't
+    work here. IO redirection using >, >>, <, << or | will not work. Chaining
+    multiple commands using ; or using & to run a command in the background
+    will fail too.
+
+    Rationale:
+    ---------
+    When running some command from a script in the background, we most likely
+    want the PID of the executed process so we can interact with it (kill it,
+    query if it's running, or if it terminated, detect if startup failed etc.).
+    For this, we can't wrap the process in a shell, if we did, it would be
+    impossible to detect any of these failure states and we would end with a
+    zombie shell process.
+
+    Even though this adds some limitations in the types of commands that can be
+    passed, it forces users to shape the commands in such a way that will be
+    more convenient for automation in the long term. Avoiding hard to debug
+    issues caused by the hidden layer of the wrapper shell.
+
+    I don't think it makes sense to have a function that runs a command in the
+    background and does use a wrapping shell. This would be equivalent to using
+    ex() and appending & to the command string. The process is run in the
+    background and we lose most of the ability to monitor and control it.
+    """
     global g_dry_run
     global g_echo_mode
 
-    resolved_cmd = cmd.format(**get_user_str_vars())
-
-    ex_cmds.append(resolved_cmd)
+    ex_cmds.append(cmd)
     if g_dry_run:
         return
 
-    if echo or g_echo_mode: print (resolved_cmd)
+    if echo or g_echo_mode: print (cmd)
+
+    if g_echo_mode:
+        return
+
+    if log == None:
+        redirect = open(os.devnull, 'wb')
+    else:
+        redirect = open(log, 'wb')
+
+    # NOTE: Passing cmd as a string does not work when shell=False, and we want
+    # shell=False to disable the wrapping shell. We use shlex's split to
+    # correctly compute the parameters, even when there are spaces inside
+    # quoted strings or escaped space characters.
+    process = subprocess.Popen(shlex.split(cmd), shell=False, stdout=redirect, stderr=redirect, cwd=cwd)
+
+    redirect.close()
+    return process.pid
+
+def ex (cmd, no_stdout=False, ret_stdout=False, echo=True, cwd=None):
+    global g_dry_run
+    global g_echo_mode
+
+    ex_cmds.append(cmd)
+    if g_dry_run:
+        return
+
+    if echo or g_echo_mode: print (cmd)
 
     if g_echo_mode:
         return
 
     if not ret_stdout:
         redirect = open(os.devnull, 'wb') if no_stdout else None
-        return subprocess.call(resolved_cmd, shell=True, stdout=redirect)
+        return subprocess.call(cmd, shell=True, stdout=redirect, cwd=cwd)
     else:
         result = ""
         try:
-            result = subprocess.check_output(resolved_cmd, shell=True, stderr=open(os.devnull, 'wb')).decode().strip ()
+            result = subprocess.check_output(cmd, shell=True, stderr=open(os.devnull, 'wb'), cwd=cwd).decode().strip ()
         except subprocess.CalledProcessError as e:
             pass
         return result
@@ -412,7 +465,7 @@ def ex (cmd, no_stdout=False, ret_stdout=False, echo=True):
 # TODO: Rename this because it has the same name as one of the default logging
 # functions in python.
 def info (s):
-    # The following code can be used to se available colors
+    # The following code can be used to see available colors
     #for i in range (8):
     #    print ("\033[0;3" + str(i) + "m\033[K" + "HELLO" + "\033[m\033[K", end=' ')
     #    print ("\033[0;9" + str(i) + "m\033[K" + "HELLO" + "\033[m\033[K", end=' ')
@@ -430,6 +483,39 @@ def warn (s):
     color = '\033[1;33m\033[K'
     default_color = '\033[m\033[K'
     print (color+s+default_color)
+
+def ecma_red(s):
+ return f"\033[1;31m\033[K{s}\033[m\033[K"
+
+def ecma_green(s):
+ return f"\033[1;32m\033[K{s}\033[m\033[K"
+
+def ecma_yellow(s):
+ return f"\033[1;33m\033[K{s}\033[m\033[K"
+
+def ecma_blue(s):
+ return f"\033[1;34m\033[K{s}\033[m\033[K"
+
+def ecma_magenta(s):
+ return f"\033[1;35m\033[K{s}\033[m\033[K"
+
+def ecma_cyan(s):
+ return f"\033[1;36m\033[K{s}\033[m\033[K"
+
+def ecma_white(s):
+ return f"\033[1;37m\033[K{s}\033[m\033[K"
+
+def ecma_bold(s):
+ return f"\033[1m\033[K{s}\033[m\033[K"
+
+def ecma_code(s, code):
+ """Code is an integer between 16 and 232"""
+ return f"\033[1;38;5;{code}m\033[K{s}\033[m\033[K"
+
+def ecma_code_f(code):
+    def ecma_f(s):
+        return ecma_code(s, code)
+    return ecma_f
 
 def pickle_load(fname):
     with open (fname, 'rb') as f:
@@ -501,7 +587,7 @@ def store (name, value, default=None):
             if default != None:
                 cache_dict[name] = default
             else:
-                print ('Key \''+name+'\' is not in pymk/cache.')
+                print ('Key \''+name+'\' is not in mkpy/cache.')
                 return
     else:
         cache_dict[name] = value
@@ -523,14 +609,28 @@ def store_get (name, default=None):
     if name == 'last_target':
         warn('Las called snip cache variable was renamed. Please change \'last_target\' to \'last_snip\'')
 
+    cache_dict = get_cache_dict ()
+
+    if name not in cache_dict.keys ():
+        if default != None:
+            cache_dict[name] = default
+        else:
+            # TODO: store_get(<name>) won't silently return None, it will print
+            # this warning. If users want to set None as default return value,
+            # store_get(<name>, default=None) has to be used. I like it because
+            # it shows intent explicitly, but I'm not sure if it's intuitive
+            # enough.
+            print ('Key \''+name+'\' is not in pymk/cache.')
+
     # Even though we could avoid creating this function and require the user to
     # call store() with value==None, I found this is counter intuitive and hard
     # to remember, because it mixes a function that stores with one that gets
     # so the argument order is not straightforward, when using it to store the
     # 'natural' order is (name, value, default), but when using it to get a
     # value the common order would be (name, default, value) as value isn't
-    # really useful here and needs to be set to None.
-    return store (name, None, default)
+    # really useful here and needs to be set to None. Also, it rewrites the
+    # cache file on reads, which is unexpected.
+    return cache_dict.get (name)
 
 def store_init (name, value):
     """
@@ -585,13 +685,13 @@ def store_init (name, value):
 def pers_func_f (name, func, args, kwargs={}):
     """
     This function calls _func_(*args, **kwargs), stores whatever it returns in
-    mkpy/cache with _name_ as key. If this function is called agaín, and _args_
+    mkpy/cache with _name_ as key. If this function is called again, and _args_
     and _kwargs_ don't change, the previous result is returned without calling
     _func_ agaín.
 
-    We assume the return value of _func_ only depends on its arguments. If it
-    depends on external state, there is no way we can detect _func_ needs to be
-    called again.
+    We assume the return value of _func_ only depends on its arguments (it's
+    purely functional). If it depends on external state, there is no way we can
+    detect _func_ needs to be called again.
     """
     # I don't think there is a valud usecase where we would receive no
     # arguments. If there are no arguments then the return value of the
@@ -648,20 +748,23 @@ def pers_func (name, func, arg):
     #
     #     pers_func(name, func, [arg]) vs pers_func(name, func, arg)
     #
-    # What I'm worried is that people would find it counter intuitive to have
-    # to wrap arg into a list.
+    # What I'm worried is that users will find it counter intuitive to have to
+    # wrap arg into a list.
     return pers_func_f (name, func, [arg])
 
+def path_isfile(path):
+    return os.path.isfile(path)
+
 def path_isdir (path_s):
-    return os.path.isdir(path_s.format(**get_user_str_vars()))
+    return os.path.isdir(path_s)
 
 def path_resolve (path_s):
-    return os.path.expanduser(path_s.format(**get_user_str_vars()))
+    return os.path.expanduser(path_s)
 
 def path_exists (path_s):
     """
-    Convenience function that checks the existance of a file or directory. It
-    supports context variable substitutions.
+    Convenience function that checks the existance of a path, either as a file
+    or a directory.
     """
     return pathlib.Path(path_resolve(path_s)).exists()
 
@@ -670,6 +773,9 @@ def path_dirname (path_s):
 
 def path_basename (path_s):
     return os.path.basename(path_s)
+
+def path_split (path):
+    return os.path.splitext(path)
 
 def path_cat (path, *paths):
     # I don't like how os.path.join() resets to root if it finds os.sep as the
@@ -695,6 +801,34 @@ def ensure_dir (path_s):
     resolved_path = path_resolve(path_s)
     if not path_exists(resolved_path):
         os.makedirs (resolved_path)
+
+def unpack_zip(fname, curr_path='', extensions=['.zip']):
+    """
+    Extract nested zip files recursively. Compressed files are left untouched,
+    the extracted result will be available in a directory with the same name
+    (and extension) but with the .dir suffix.
+
+    Useful for exploring the content of JAR or WAR files. Just pass
+    ['.jar','.war'] to the extensions parameter.
+    """
+    filepath = curr_path + fname
+    print (f'{filepath}')
+
+    target_path = filepath +'.dir/'
+    zf = zipfile.ZipFile(filepath)
+    zf.extractall(target_path)
+    extracted_list = zf.namelist()
+    zf.close()
+
+    # TODO: How does this handle a zip with the same file multiple times inside?
+    for p in extracted_list:
+        try:
+            _, ext = path_split(p)
+            if ext in extensions:
+                unpack_zip(p, curr_path=target_path)
+        except:
+            print(ecma_red('error:') + f' could not extract {p}')
+            pass
 
 def needs_target (recipe):
     """
@@ -745,6 +879,18 @@ def needs_targets (recipes):
             return True
     return False
 
+def c_needs_rebuild (c_sources, target):
+    """
+    Calls gcc with the passed string as source files to compute the non system
+    files included from it. It then compares its last edit time to the passed
+    target file to determine if the binary needs to be rebuilt.
+    """
+
+    mm_out = ex (f'gcc -MM {c_sources}', ret_stdout=True, echo=False)
+    arr = mm_out.split ()[1:]
+    recipes = {(source, target) for source in arr if source != '\\'}
+    return needs_targets (recipes)
+
 def file_time(fname):
     res = 0
     tgt_path = pathlib.Path(fname)
@@ -753,34 +899,38 @@ def file_time(fname):
     return res
 
 
-def install_files (info_dict, prefix=None):
+def install_files (info_dict, prefix=None, only_new=True):
     global g_dry_run
 
+    # TODO: I've come to realize this is a HORRIBLE default...
     if prefix == None:
         prefix = '/'
 
     prnt = []
     for f in info_dict.keys():
-        dst = prefix + info_dict[f]
-        resolved_dst = dst.format(**get_user_str_vars())
-        resolved_f = f.format(**get_user_str_vars())
+        tgt = info_dict[f]
+        if tgt == None:
+            tgt = f
+
+        dst = path_cat(prefix, tgt)
 
         # Compute the absolute dest path including the file, even if just a
         # dest directory was specified
-        dst_dir, fname = os.path.split (resolved_dst)
+        dst_dir, fname = os.path.split (dst)
         if fname == '':
-            _, fname = os.path.split (resolved_f)
-        dest_file = dst_dir + '/' + fname
+            _, fname = os.path.split (f)
+        dest_file = path_cat(dst_dir, fname)
 
-        # If the file already exists check we have a newer version. If we
-        # don't, skip it.
         install_file = True
-        dest_file_path = pathlib.Path(dest_file)
-        if dest_file_path.exists():
-            src_time = file_time (resolved_f)
-            dst_time = file_time (dest_file)
-            if (src_time < dst_time):
-                install_file = False
+        if only_new:
+            # If the file already exists check we have a newer version. If we
+            # don't, skip it.
+            dest_file_path = pathlib.Path(dest_file)
+            if dest_file_path.exists():
+                src_time = file_time (f)
+                dst_time = file_time (dest_file)
+                if (src_time < dst_time):
+                    install_file = False
 
         if install_file:
             if not g_dry_run:
@@ -788,17 +938,17 @@ def install_files (info_dict, prefix=None):
                 if not dst_path.exists():
                     os.makedirs (dst_dir)
 
-                shutil.copy (resolved_f, dest_file)
+                shutil.copy (f, dest_file)
                 prnt.append (dest_file)
             else:
-                prnt.append ('Install: ' + resolved_f + ' -> ' + dest_file)
+                prnt.append ('Install: ' + f + ' -> ' + dest_file)
 
     prnt.sort()
     [print (s) for s in prnt]
 
     return prnt
 
-# TODO: dnf is written in python, meybe we can call dnf's module instead of
+# TODO: dnf is written in python, maybe we can call dnf's module instead of
 # using ex().
 # @use_dnf_python
 def rpm_find_providers (file_list):
@@ -1000,7 +1150,7 @@ def pymk_default (skip_snip_cache=[]):
         #     project. For example configuration files like /etc/os-release
         #     which is provided by systemd, or icon themes.
         #
-        # First we try to get the executable callin a dry run of the snip, if
+        # First we try to get the executable calling a dry run of the snip, if
         # we can't find the output file then run the snip and try again. I'm
         # still not sure this is a good default because if a snip generates
         # something using gcc and then deletes it, then this function will
@@ -1057,7 +1207,7 @@ def pymk_default (skip_snip_cache=[]):
         #
         #   * Build toolchain (gcc, llvm, ld, etc.).
         #   * Any non default python module used in pymk.py.
-        #   * Any non standard command caled by the ex() function.
+        #   * Any non standard command called by the ex() function.
         #   * Tools used to package the application (rpmbuild, debuild).
         #   * Dependencies of statically linked libraries.
 
@@ -1090,14 +1240,17 @@ def pymk_default (skip_snip_cache=[]):
 
     else:
         call_user_function (t)
-        if t != 'default' and t != 'install' and t not in skip_snip_cache:
+        old_t = store_get ('last_snip', default=None)
+        if t != 'default' and t != 'install' and t != old_t and t not in skip_snip_cache:
             store ('last_snip', value=t)
 
 ##########################
 # Custom status logger API
 #
-# This is a simpler logging API than the default logger that allows to easily
-# get the result of a single call.
+# This is a simpler logging API than Python's default logger. It allows to
+# easily process its content after it's been populated. Processing is done with
+# normal code that reads the event array, without requiring knowledge of
+# concepts like filters, handlers, formatters etc.
 _level_enum = {
     'ERROR': 1,
     'WARNING': 2,
@@ -1126,6 +1279,12 @@ class Status():
         events_str_arr = [f'{_level_to_name[e.level]}: {e.message}' for e in self.events if e.level <= self.level]
         return '\n'.join(events_str_arr)
 
+    def print(self):
+        """
+        Utility method that avoids printing an empty line if the event array is empty.
+        """
+        print(self, end='')
+
 def log_clsr(level_value):
     def log_generic(status, message, echo=False):
         if echo:
@@ -1138,3 +1297,285 @@ def log_clsr(level_value):
 for level_name, level_value in _level_enum.items():
     _g[f'log_{level_name.lower()}'] = log_clsr(level_value)
 
+
+##############
+# Regex tester
+#
+def get_color_by_idx(idx):
+    if idx == 0:
+        return ecma_green
+    elif idx == 1:
+        return ecma_cyan
+    elif idx == 2:
+        return ecma_yellow
+    elif idx == 3:
+        return ecma_magenta
+    elif idx == 4:
+        return ecma_blue
+    elif idx == 5:
+        return ecma_code_f(52)
+    elif idx == 6:
+        return ecma_code_f(183)
+
+def regex_match_print (string, match_object):
+    res = string
+    if match_object != None:
+        markers = {}
+        for i in range(len(match_object.groups())+1):
+            start, end = match_object.span(i)
+            if start != -1:
+                if start != end:
+                    marker = markers.get(start)
+                    if marker == None:
+                        markers[start] = []
+                    markers[start].append (('<', get_color_by_idx(i)))
+
+                    marker = markers.get(end)
+                    if marker == None:
+                        markers[end] = []
+                    markers[end].insert (0, ('>', get_color_by_idx(i)))
+
+                else:
+                    marker = markers.get(end)
+                    if marker == None:
+                        markers[end] = []
+                    markers[end].insert (0, ('<', get_color_by_idx(i)))
+                    markers[end].append (('>', get_color_by_idx(i)))
+
+
+        last_pos = 0
+        sorted_markers = [(key, markers[key]) for key in sorted(markers.keys())]
+        for pos, markers_at_pos in sorted_markers:
+            print (string[last_pos:pos], end='')
+            for marker in markers_at_pos:
+                print (marker[1](marker[0]), end='')
+            last_pos = pos
+        print (string[last_pos:])
+
+    else:
+        print (string)
+
+def regex_test(regex, test_str, should_match):
+    result = re.search(regex, test_str)
+
+    if (should_match and result != None) or (not should_match and result == None):
+        if result != None:
+            print (ecma_green('OK MATCH'), end=' ')
+        else:
+            print (ecma_green('OK NO MATCH'), end=' ')
+
+        regex_match_print (test_str, result)
+
+    else:
+        if result != None:
+            print (ecma_red('FAIL MATCH'), end=' ')
+            regex_match_print (test_str, result)
+            print (result)
+            print()
+
+        else:
+            print (ecma_red('FAIL NO MATCH'), end=' ')
+            regex_match_print (test_str, result)
+
+
+############################################
+# Implementation of control flow reuse for C
+#
+
+def generate_automacros (out_fname, files=None):
+    class TokenType(Enum):
+        OPERATOR = 1
+        KEYWORD = 2
+        COMMENT = 3
+        SPACE = 4
+        OTHER = 5
+
+    class Scanner():
+        def __init__(self, data, pos):
+            self.str = data
+            self.pos = pos
+
+    class Token():
+        def __init__(self, token_type, value):
+            self.type = token_type
+            self.value = value
+
+    def token_next (scnr):
+        new_token = None
+
+        if scnr.str.startswith ('//', scnr.pos):
+            scnr.pos += 2
+            start = scnr.pos
+            while scnr.str[scnr.pos] != '\n' and scnr.pos < len(scnr.str):
+                scnr.pos += 1
+            new_token = Token(TokenType.COMMENT,  scnr.str[start:scnr.pos])
+
+        if new_token == None and scnr.str.startswith ('/*', scnr.pos):
+            scnr.pos += 2
+            start = scnr.pos
+            comment_end = scnr.str.find('*/')
+            if comment_end != -1:
+                comment = scnr.str[start:comment_end]
+            else:
+                comment = scnr.str[start:]
+
+            new_token = Token(TokenType.COMMENT, comment)
+
+        if new_token == None:
+            operators = [';','{', '}', '(', ')', ',']
+            for op in operators:
+                if scnr.str.startswith (op, scnr.pos):
+                    scnr.pos += len(op)
+                    new_token = Token(TokenType.OPERATOR, op)
+                    break
+
+        if new_token == None:
+            keywords = ['if', 'else', 'do', 'while', 'for']
+            for kwd in keywords:
+                if scnr.str.startswith (kwd, scnr.pos):
+                    scnr.pos += len(kwd)
+                    new_token = Token(TokenType.KEYWORD, kwd)
+
+        if new_token == None:
+            start = scnr.pos
+            spaces = ['\n', ' ', '\t']
+            if scnr.str[scnr.pos] in spaces:
+                while scnr.str[scnr.pos] in spaces and scnr.pos < len(scnr.str):
+                    scnr.pos += 1
+                new_token = Token(TokenType.SPACE, scnr.str[start:scnr.pos])
+
+        if new_token == None:
+            start = scnr.pos
+            while scnr.str[scnr.pos] not in operators and scnr.pos < len(scnr.str):
+                scnr.pos += 1
+
+            new_token = Token(TokenType.OTHER, scnr.str[start:scnr.pos])
+
+        # For all non-comment tokens, append the spacing to its value. We do this
+        # to preserve formatting in the generated code. When matching token values
+        # we strip spaces.
+        if new_token != None and new_token.type != TokenType.COMMENT:
+            space_start = scnr.pos
+            spaces = ['\n', ' ', '\t']
+            while scnr.str[scnr.pos] in spaces and scnr.pos < len(scnr.str):
+                scnr.pos += 1
+            new_token.value += scnr.str[space_start:scnr.pos]
+
+        return new_token
+
+    def token_match_error (token, token_type, token_value=None):
+        if token.type != token_type:
+            if token_value == None:
+                print (f"error: Expected token type {token_type.name}, got '{token.value}' of type {token.type.name}.")
+            else:
+                print (f"error: Expected token '{token_value}' of type {token_type.name}, got '{token.value}' of type {token.type.name}.")
+
+        elif token_value != None and token.value != token_value:
+            print (f"error: Expected '{token_value}', got '{token.value}'.")
+
+    def token_match (token, token_type, token_value=None):
+        match = False
+        if token.type == token_type:
+            if token_value == None or token.value.strip() == token_value:
+                match = True
+
+        return match
+
+    def token_expect (scnr, token_type, token_value=None):
+        token = token_next (scnr)
+        if not token_match (token, token_type, token_value):
+            token_match_error (token, token_type, token_value)
+
+    ## START OF IMPLEMENTATION ##
+
+    if files == None:
+        files = []
+        source_code_dir = os.path.abspath(path_resolve('.'))
+        for dirpath, dirnames, filenames in os.walk(source_code_dir):
+            for fname in filenames:
+                abs_path = path_cat(dirpath, fname)
+                if abs_path.endswith(".c") or abs_path.endswith(".h"):
+                    files.append(abs_path)
+
+
+    result = ''
+    curr_macro_name = ''
+    curr_macro = ''
+    macros = {}
+    for abs_path in files:
+        f = open(abs_path)
+        file_data = f.read()
+        f.close()
+
+        auto_macro_start = file_data.find ('@AUTO_MACRO_PREFIX')
+        while auto_macro_start != -1:
+            prefix = ''
+            stub = ''
+            macro_dict = {}
+
+            scnr = Scanner(file_data, auto_macro_start)
+
+            token = token_next(scnr)
+            token_expect(scnr, TokenType.OPERATOR, '(')
+            prefix = token_next(scnr).value
+            token_expect(scnr, TokenType.OPERATOR, ')')
+
+            token = token_next(scnr)
+            while not token_match(token, TokenType.OPERATOR, '{'):
+                stub += token.value
+                token = token_next(scnr)
+            stub += token.value
+
+            brace_count = 1
+            while brace_count > 0:
+                token = token_next (scnr)
+
+                if token_match(token, TokenType.OPERATOR, '{'):
+                    brace_count += 1
+                elif token_match(token, TokenType.OPERATOR, '}'):
+                    brace_count -= 1
+
+                if token_match (token, TokenType.COMMENT):
+                    marker_start = token.value.find ('@AUTO_MACRO(BEGIN)')
+                    if marker_start != -1:
+                        macro_name = token.value[:marker_start].strip()
+                        curr_macro_name = prefix + macro_name.upper().replace(' ', '_')
+
+                    else:
+                        marker_end = token.value.find ('@AUTO_MACRO(END)')
+                        if marker_end != -1:
+                            macro_dict[curr_macro_name] = curr_macro
+                            stub += curr_macro_name
+                            curr_macro_name = ''
+                            curr_macro = ''
+
+                else:
+                    # TODO: Keep comments in macros, we need to avoid adding
+                    # '\' at line end. Right now we ignore them.
+                    if curr_macro_name != '':
+                        added_continuation = token.value.replace('\n', ' \\\n')
+                        curr_macro += added_continuation
+
+                    elif not (stub.strip(" ").endswith('\n') and token.value.strip() == ''):
+                        # Add line to stub, except if it would create consecutive empty lines.
+                        stub += token.value
+
+                #print (f'({token.type.name}, "{token.value}")')
+
+            if prefix not in macros.keys():
+                macros[prefix] = ((stub, macro_dict))
+            else:
+                print (f"error: There is already an automacro with prefix '{prefix}'")
+
+            auto_macro_start = file_data.find ('@AUTO_MACRO_PREFIX', scnr.pos)
+
+    for prefix, (stub, macro_dict) in macros.items():
+        result += f"/* Stub for '{prefix}'\n" + stub.strip() + '\n*/\n\n'
+        for macro_name, definition in macro_dict.items():
+            result += f'#define {macro_name}'
+            result += definition + '\n'
+
+
+    out_f = open (out_fname, 'w')
+    out_f.write (result)
+    out_f.close()

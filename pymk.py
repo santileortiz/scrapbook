@@ -16,8 +16,7 @@ def default ():
     call_user_function(target)
 
 def scrapbook ():
-    ex('gcc {C_FLAGS} -o bin/scrapbook scrapbook.c -mavx -maes -lm')
-
+    ex(f'gcc {C_FLAGS} -o bin/scrapbook scrapbook.c -mavx -maes -lm')
 if __name__ == "__main__":
     # Everything above this line will be executed for each TAB press.
     # If --get_completions is set, handle_tab_complete() calls exit().
