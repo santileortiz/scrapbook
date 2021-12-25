@@ -76,7 +76,7 @@ bool scanner_output_error (struct scanner_t *scnr, string_t *error_out)
             free (scnr->error_message);
         } else {
             str_cat_printf (error_out,
-                            ECMA_BOLD("%s ") ECMA_RED("error:") " %s\n",
+                            ECMA_S_DEFAULT(1, "%s ") ECMA_RED("error:") " %s\n",
                             location_str, scnr->error_message);
         }
         has_no_error = false;
@@ -118,7 +118,7 @@ bool scanner_float (struct scanner_t *scnr, float *value)
     // Don't accept leading spaces.
     // NOTE: We don't accept floats not starting with a digit like .5, INF or
     // NAN. But we do accept hexadecimal floats like 0x1.Cp2
-    if (!isdigit (*scnr->pos)) {
+    if (!(isdigit (*scnr->pos) || *scnr->pos == '-')) {
         return false;
     }
 
