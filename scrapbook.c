@@ -206,12 +206,13 @@ struct file_bucket_t {
     struct file_bucket_t *next;
 };
 
-BINARY_TREE_NEW(uint_64_to_str, uint64_t, struct file_bucket_t*,  a <= b ? (a == b ? 0 : -1) : 1);
+BINARY_TREE_NEW(uint64_to_str_list, uint64_t, struct file_bucket_t*,  a <= b ? (a == b ? 0 : -1) : 1);
+BINARY_TREE_NEW(str_to_str_list, char*, struct file_bucket_t*, strcmp(a,b));
 
 struct scrapbook_t {
     mem_pool_t pool;
 
-    struct uint_64_to_str_tree_t hash_to_path;
+    struct uint64_to_str_list_tree_t hash_to_path;
 
     uint64_t total_size; 
     uint64_t processed_files;
@@ -219,11 +220,11 @@ struct scrapbook_t {
 
 void push_file_hash (struct scrapbook_t *app, uint64_t hash, char *path)
 {
-    struct file_bucket_t *bucket = uint_64_to_str_get (&app->hash_to_path, hash);
+    struct file_bucket_t *bucket = uint64_to_str_list_get (&app->hash_to_path, hash);
     if (bucket == NULL) {
         bucket = mem_pool_push_struct (&app->hash_to_path.pool, struct file_bucket_t);
         *bucket = ZERO_INIT (struct file_bucket_t);
-        uint_64_to_str_tree_insert (&app->hash_to_path, hash, bucket);
+        uint64_to_str_list_tree_insert (&app->hash_to_path, hash, bucket);
     }
 
     // TODO: This de-duplication feels wrong here because push_file_hash() is
@@ -429,7 +430,7 @@ struct file_header_t* collect_files_from_cli (mem_pool_t *pool, char *extension,
     clsr.pool = pool;
 
     uint64_t file_cnt = 0;
-    printf (ECMA_BOLD("Creating file list\n"));
+    printf (ECMA_S_DEFAULT(1, "Creating file list\n"));
     for (int i=0; i<paths_len; i++) {
         char *path = abs_path (paths[i], NULL);
         printf ("PATH: %s\n", path);
@@ -466,11 +467,10 @@ struct file_header_t* collect_jpg_from_cli (mem_pool_t *pool, char **paths, int 
 // Finds duplicates that are identical at file level.
 //
 // When a file has multiple duplicates we automatically decide which one to
-// remove according to the criteria  of duplicate_file_name_cmp().  Any path
-// that contains remove_substr as substring will be prefered for removal over
-// one that doesn't contaín it.
-void find_file_duplicates (struct scrapbook_t *sb, struct file_header_t *files, char *remove_substr, char *removal_filter,
-                           char* tentative_buckets_fname, char* final_buckets_fname, char* rm_cmd_fname, bool is_dry_run)
+// remove according to the criteria of duplicate_file_name_cmp(). Any path that
+// contains remove_substr as substring will be prefered for removal over one
+// that doesn't contaín it.
+struct file_bucket_t* find_file_duplicates (struct scrapbook_t *sb, struct file_header_t *files)
 {
     struct file_header_t *curr_str = files;
     while (curr_str != NULL) {
@@ -495,7 +495,7 @@ void find_file_duplicates (struct scrapbook_t *sb, struct file_header_t *files, 
 
     struct file_bucket_t *tentative_duplicates = NULL;
     uint32_t num_tentative_non_unique_files = 0;
-    BINARY_TREE_FOR(uint_64_to_str, &sb->hash_to_path, curr_node) {
+    BINARY_TREE_FOR(uint64_to_str_list, &sb->hash_to_path, curr_node) {
         struct file_bucket_t *bucket = curr_node->value;
         if (bucket->count > 1) {
             struct file_header_t *curr_path = bucket->strings;
@@ -509,10 +509,6 @@ void find_file_duplicates (struct scrapbook_t *sb, struct file_header_t *files, 
         }
     }
     printf ("Tentative non unique file count: %d\n", num_tentative_non_unique_files);
-
-    if (tentative_buckets_fname != NULL) {
-        print_bucket_list_path (tentative_duplicates);
-    }
 
     struct file_bucket_t *exact_duplicates = NULL;
     uint64_t exact_duplicates_len = 0;
@@ -620,81 +616,65 @@ void find_file_duplicates (struct scrapbook_t *sb, struct file_header_t *files, 
         }
     }
 
-    if (exact_duplicates_len > 0) {
-        uint64_t num_buckets = 0;
-        struct file_header_t *files_to_remove = NULL;
-        struct file_bucket_t *curr_bucket = exact_duplicates;
-        while (curr_bucket != NULL) {
-            duplicate_relevance_sort_user_data (&curr_bucket->strings, curr_bucket->count, remove_substr);
+    return exact_duplicates;
+}
 
-            struct file_header_t *curr_str = curr_bucket->strings->next;
-            while (curr_str != NULL) {
-                LINKED_LIST_PUSH_NEW (&sb->pool, struct file_header_t, files_to_remove, new_string);
-                str_set(&new_string->path, str_data(&curr_str->path));
-                curr_str = curr_str->next;
-            }
+void push_file_path (mem_pool_t *pool, struct str_to_str_list_tree_t *filename_tree, char *path)
+{
+    char *filename = path_basename (path);
 
-            num_buckets++;
-            curr_bucket = curr_bucket->next;
-        }
-
-        printf ("Unique files: %ld\n", num_buckets);
-        printf ("Total duplicate files: %ld\n", exact_duplicates_len);
-        printf ("\n");
-
-        //print_bucket_list_fnames (exact_duplicates);
-        //print_bucket_list_path (exact_duplicates);
-
-        // Print the list of files to be removed
-        {
-            struct file_header_t *curr_str = files_to_remove;
-            while (curr_str != NULL) {
-                if (removal_filter == NULL || strstr (str_data(&curr_str->path), removal_filter) == str_data(&curr_str->path)) {
-                    printf ("D '%s'\n", str_data(&curr_str->path));
-                }
-                curr_str = curr_str->next;
-            }
-            printf ("\n");
-        }
-
-        // Actually remove all duplicate files
-        if (!is_dry_run) {
-            struct file_header_t *curr_str = files_to_remove;
-            while (curr_str != NULL) {
-                if (removal_filter == NULL || strstr (str_data(&curr_str->path), removal_filter) == str_data(&curr_str->path)) {
-                    unlink (str_data(&curr_str->path));
-                }
-                curr_str = curr_str->next;
-            }
-        }
-
-        // This will print a huge rm command that will delete all duplicates.
-        //{
-        //    printf ("rm ");
-        //    struct file_header_t *curr_str = files_to_remove;
-        //    while (curr_str != NULL) {
-        //        if (removal_filter == NULL || strstr (str_data(&curr_str->path), removal_filter) == str_data(&curr_str->path)) {
-        //            printf ("'%s' ", str_data(&curr_str->path));
-        //        }
-        //        curr_str = curr_str->next;
-        //    }
-        //    printf ("\n");
-        //}
-
-        //printf ("mv ");
-        //struct file_header_t *curr_str = files_to_remove;
-        //while (curr_str != NULL) {
-        //    printf ("'%s'\n", str_data(&curr_str->path));
-        //    curr_str = curr_str->next;
-        //}
-        //printf ("\n");
+    struct file_bucket_t *bucket = str_to_str_list_get (filename_tree, filename);
+    if (bucket == NULL) {
+        bucket = mem_pool_push_struct (pool, struct file_bucket_t);
+        *bucket = ZERO_INIT (struct file_bucket_t);
+        str_to_str_list_tree_insert (filename_tree, filename, bucket);
     }
+
+    LINKED_LIST_PUSH_NEW (pool, struct file_header_t, bucket->strings, str);
+    str_set (&str->path, path);
+    bucket->count++;
+}
+
+// Finds files with the same name.
+struct file_bucket_t* find_file_name_duplicates (struct scrapbook_t *sb, struct file_header_t *files)
+{
+    struct str_to_str_list_tree_t filename_to_path = {0};
+
+    struct file_header_t *curr_str = files;
+    while (curr_str != NULL) {
+        sb->processed_files++;
+
+        char *fname = str_data(&curr_str->path);
+        push_file_path (&sb->pool, &filename_to_path, fname);
+
+        curr_str = curr_str->next;
+        cli_status ("Files processed: ", sb->processed_files);
+    }
+    cli_status_end ();
+
+    printf ("Total files: %lu\n", sb->processed_files);
+
+    // Collect buckets with more than 1 element
+    struct file_bucket_t *name_duplicates = NULL;
+    BINARY_TREE_FOR(str_to_str_list, &filename_to_path, curr_node) {
+        struct file_bucket_t *bucket = curr_node->value;
+        if (bucket->count > 1) {
+            struct file_header_t *curr_path = bucket->strings;
+            while (curr_path != NULL) {
+                curr_path = curr_path->next;
+            }
+
+            LINKED_LIST_PUSH (name_duplicates, bucket);
+        }
+    }
+
+    return name_duplicates;
 }
 
 // This duplicate detection will be based on the image data inside the jpg file.
 // The idea is to be able to detect cases where the image data is the same but
 // metadata (exif tags) have changed.
-void find_image_duplicates (struct scrapbook_t *sb, struct file_header_t *files)
+struct file_bucket_t* find_image_duplicates (struct scrapbook_t *sb, struct file_header_t *files)
 {
     struct file_header_t *curr_str = files;
     while (curr_str != NULL) {
@@ -719,7 +699,7 @@ void find_image_duplicates (struct scrapbook_t *sb, struct file_header_t *files)
 
     struct file_bucket_t *tentative_duplicates = NULL;
     uint32_t num_tentative_non_unique_files = 0;
-    BINARY_TREE_FOR(uint_64_to_str, &sb->hash_to_path, curr_node) {
+    BINARY_TREE_FOR(uint64_to_str_list, &sb->hash_to_path, curr_node) {
         struct file_bucket_t *bucket = curr_node->value;
         if (bucket->count > 1) {
             struct file_header_t *curr_path = bucket->strings;
@@ -792,34 +772,53 @@ void find_image_duplicates (struct scrapbook_t *sb, struct file_header_t *files)
         }
     }
 
-    //if (exact_duplicates_len > 0) {
-    //    struct file_header_t *files_to_remove = NULL;
-    //    struct file_bucket_t *curr_bucket = exact_duplicates;
-    //    while (curr_bucket != NULL) {
-    //        image_duplicate_relevance_sort (&curr_bucket->strings, curr_bucket->count);
+    return exact_duplicates;
+}
 
-    //        struct file_header_t *curr_str = curr_bucket->strings->next;
-    //        while (curr_str != NULL) {
-    //            LINKED_LIST_PUSH_NEW (&sb->pool, struct file_header_t, files_to_remove, new_string);
-    //            str_set(&new_string->path, str_data(&curr_str->path));
-    //            curr_str = curr_str->next;
-    //        }
+void remove_duplicates (struct scrapbook_t *sb,
+                        struct file_bucket_t *bucket_list,
+                        char *remove_substr, char *removal_filter, bool is_dry_run)
+{
+    if (bucket_list == NULL) return;
 
-    //        curr_bucket = curr_bucket->next;
-    //    }
+    // Sort each bucket and build a list of all files that will be removed.
+    // NOTE: This mutates the order of each bucket in the input list.
+    uint64_t num_buckets = 0;
+    struct file_header_t *files_to_remove = NULL;
+    uint64_t files_to_remove_len = 0;
+    LINKED_LIST_FOR (struct file_bucket_t*, curr_bucket, bucket_list) {
+        duplicate_relevance_sort_user_data (&curr_bucket->strings, curr_bucket->count, remove_substr);
 
-    //    //print_bucket_list_fnames (exact_duplicates);
-    //    //print_bucket_list_path (exact_duplicates);
+        LINKED_LIST_FOR(struct file_header_t*, curr_str, curr_bucket->strings->next) {
+            if (removal_filter == NULL ||
+                strstr(str_data(&curr_str->path), removal_filter) == str_data(&curr_str->path))
+            {
+                LINKED_LIST_PUSH_NEW (&sb->pool, struct file_header_t, files_to_remove, new_string);
+                str_set(&new_string->path, str_data(&curr_str->path));
+            }
+        }
 
-    //    // This will print a huge rm command that will delete all duplicates.
-    //    printf ("rm ");
-    //    struct file_header_t *curr_str = files_to_remove;
-    //    while (curr_str != NULL) {
-    //        printf ("'%s' ", str_data(&curr_str->path));
-    //        curr_str = curr_str->next;
-    //    }
-    //    printf ("\n");
-    //}
+        num_buckets++;
+    }
+
+    printf ("Unique files: %ld\n", num_buckets);
+    printf ("Files to be removed: %ld\n", files_to_remove_len);
+    printf ("\n");
+
+    // Print the list of files to be removed
+    if (files_to_remove_len > 0) {
+        LINKED_LIST_FOR (struct file_header_t*, curr_str, files_to_remove) {
+            printf ("D '%s'\n", str_data(&curr_str->path));
+        }
+        printf ("\n");
+    }
+
+    // Actually remove all duplicate files
+    if (!is_dry_run) {
+        LINKED_LIST_FOR (struct file_header_t*, curr_str, files_to_remove) {
+            unlink (str_data(&curr_str->path));
+        }
+    }
 }
 
 void print_hex_bytes (void *data, uint64_t data_len)
@@ -868,11 +867,12 @@ int main (int argc, char **argv)
         paths += 2;
     }
 
-    bool is_dry_run = get_cli_bool_opt ("--dry-run", argv, argc);
-    if (is_dry_run) {
+    bool is_remove = get_cli_bool_opt ("--remove", argv, argc);
+    if (is_remove) {
         paths_count -= 1;
         paths += 1;
     }
+    bool is_dry_run = !is_remove;
 
     char *argument = NULL;
     if ((argument = get_cli_arg_opt ("--jpeg-structure", argv, argc)) != NULL) {
@@ -912,17 +912,24 @@ int main (int argc, char **argv)
         struct file_header_t *images = collect_jpg_from_cli (&scrapbook.pool, argv+2, argc-2);
         testing_function (&scrapbook, images);
 
+    } else if ((argument = get_cli_arg_opt ("--find-duplicates-file-name", argv, argc)) != NULL) {
+        struct file_header_t *images = collect_files_from_cli (&scrapbook.pool, NULL, paths, paths_count);
+        struct file_bucket_t *duplicates = find_file_name_duplicates (&scrapbook, images);
+        remove_duplicates (&scrapbook, duplicates, remove_substr, removal_filter, is_dry_run);
+
     } else if ((argument = get_cli_arg_opt ("--find-duplicates-file", argv, argc)) != NULL) {
         struct file_header_t *images = collect_files_from_cli (&scrapbook.pool, NULL, paths, paths_count);
-        find_file_duplicates (&scrapbook, images, remove_substr, removal_filter,
-                              NULL, NULL, NULL, is_dry_run);
+        struct file_bucket_t *duplicates = find_file_duplicates (&scrapbook, images);
+        remove_duplicates (&scrapbook, duplicates, remove_substr, removal_filter, is_dry_run);
 
     } else if ((argument = get_cli_arg_opt ("--find-duplicates-image", argv, argc)) != NULL) {
         struct file_header_t *images = collect_jpg_from_cli (&scrapbook.pool, argv+2, argc-2);
         find_image_duplicates (&scrapbook, images);
 
     } else {
-        printf ("Usage:\nscrapbook [--jpeg-structure <file> | --find-duplicates-file <directory>]\n");
+        printf ("Usage:\n");
+        printf ("scrapbook --jpeg-structure FILE\n");
+        printf ("scrapbook [--find-duplicates-file-name | --find-duplicates-file | --find-duplicates-image] [--remove] PATHS...\n");
     }
 
     mem_pool_destroy (&scrapbook.pool);
