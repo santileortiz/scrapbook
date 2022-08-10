@@ -98,8 +98,7 @@ void file_name_compute_relevance_characteristics (char *fname, bool *has_copy_pa
             char *pos_backup = scnr->pos;
             if (scanner_char (scnr, '(') &&
                 scanner_int (scnr, &i) &&
-                scanner_str (scnr, ").") &&
-                (scanner_strcase (scnr, "jpg") || scanner_strcase (scnr, "jpeg"))) {
+                scanner_str (scnr, ").")) {
                 *has_copy_parenthesis = true;
 
             } else {
@@ -173,6 +172,17 @@ bool duplicate_file_name_cmp (struct file_header_t *p1, struct file_header_t *p2
         is_p1_lt_p2 = false;
     } else if (has_copy_parenthesis_1 == false && has_copy_parenthesis_2 == true) {
         is_p1_lt_p2 = true;
+
+    // I've seen file duplicates with .HEIC and .heif extensions, I don't know
+    // what creates these .heif copies but they seem to be the odd ones because
+    // the overwhelming majority of files is .HEIC.
+    // TODO: Is there a similar preference between .jpeg and .jpg?... maybe we
+    // should just prefer the most common extension?.
+    } else if (strcasecmp(get_extension(fname1), "HEIC") == 0) {
+        is_p1_lt_p2 = true;
+    } else if (strcasecmp(get_extension(fname2), "HEIC") == 0) {
+        is_p1_lt_p2 = false;
+
     } else if (space_cnt_1 < space_cnt_2) {
         is_p1_lt_p2 = true;
     } else {
@@ -379,19 +389,34 @@ void fname_comparison_test ()
     test_relevance_characteristics ("In the middle (10) hola.jpg.jpg");
 }
 
-void print_bucket_list_fnames (struct file_bucket_t *bucket_lst)
+enum path_format_t{
+    PATH_FORMAT_FNAME,
+    PATH_FORMAT_ABSOLUTE,
+
+    // TODO: Implement something like this and make print_bucket_list() recive
+    // the base path.
+    //PATH_FORMAT_RELATIVE_PATH
+};
+
+void print_bucket_list (struct file_bucket_t *bucket_lst, enum path_format_t format)
 {
     struct file_bucket_t *curr_bucket = bucket_lst;
     while (curr_bucket != NULL) {
         struct file_header_t *curr_str = curr_bucket->strings;
         while (curr_str != NULL) {
-            char *fname = NULL;
-            path_split (NULL, str_data(&curr_str->path), NULL, &fname);
-            printf ("'%s'", fname);
+            if (format == PATH_FORMAT_FNAME) {
+                char *fname = NULL;
+                path_split (NULL, str_data(&curr_str->path), NULL, &fname);
+                printf ("'%s'", fname);
+                free (fname);
+
+            } else if (format == PATH_FORMAT_ABSOLUTE) {
+                printf ("'%s'", str_data(&curr_str->path));
+            }
+
             if (curr_str->next != NULL) {
                 printf (" ");
             }
-            free (fname);
 
             curr_str = curr_str->next;
         }
@@ -401,23 +426,58 @@ void print_bucket_list_fnames (struct file_bucket_t *bucket_lst)
     }
 }
 
-void print_bucket_list_path (struct file_bucket_t *bucket_lst)
+void print_bucket_duplicates (char **paths, int paths_len,
+                              struct file_bucket_t *bucket_lst, enum path_format_t format)
 {
+    assert (paths != NULL);
+
+    printf ("Manually append to: ~/.weaver/data/deduplication.tsplx\n");
+
+    // TODO: Also print this for name and image deduplication
+    printf ("file-content-deduplication{\n");
+
+    printf ("  path");
+    for (int i=0; i<paths_len; i++) {
+        printf (" \"%s\"", paths[i]);
+    }
+    printf (";\n");
+
+    printf ("  duplicates {\n");
     struct file_bucket_t *curr_bucket = bucket_lst;
     while (curr_bucket != NULL) {
         struct file_header_t *curr_str = curr_bucket->strings;
-        while (curr_str != NULL) {
-            printf ("'%s'", str_data(&curr_str->path));
-            if (curr_str->next != NULL) {
-                printf (" ");
-            }
+        if (curr_bucket->strings->next != NULL) {
+            bool is_first = true;
+            while (curr_str != NULL) {
+                if (is_first) {
+                    printf ("    ");
+                    is_first = false;
+                }
 
-            curr_str = curr_str->next;
+                if (format == PATH_FORMAT_FNAME) {
+                    char *fname = NULL;
+                    path_split (NULL, str_data(&curr_str->path), NULL, &fname);
+                    printf ("\"%s\"", fname);
+                    free (fname);
+
+                } else if (format == PATH_FORMAT_ABSOLUTE) {
+                    printf ("\"%s\"", str_data(&curr_str->path));
+                }
+
+                if (curr_str->next != NULL) {
+                    printf (" ");
+                }
+
+                curr_str = curr_str->next;
+            }
+            printf (";\n");
         }
-        printf ("\n");
 
         curr_bucket = curr_bucket->next;
     }
+    printf ("  }\n");
+
+    printf ("}\n");
 }
 
 // Looks up directory names passed as cli arguments and recursiveley collects
@@ -479,7 +539,13 @@ struct file_bucket_t* find_file_duplicates (struct scrapbook_t *sb, struct file_
 
         uint64_t file_len = 0;
         char *fname = str_data(&curr_str->path);
-        char *file_data = partial_file_read (&pool_l, fname, kilobyte(1), &file_len);
+        // TODO: The length of the initial partial read is currently hardcoded
+        // to the smallest value I've found to work fo pictures such that we
+        // don't group together files that should actually be separate. 1kB
+        // worked fine for a while, but for HEIC/HEIF files we got lots of false
+        // positives, so it's now been increased to 5kB. Should this be a CLI
+        // parameter?.
+        char *file_data = partial_file_read (&pool_l, fname, kilobyte(5), &file_len);
         sb->total_size += file_len;
 
         push_file_hash (sb, hash_64 (file_data, file_len), fname);
@@ -610,7 +676,7 @@ struct file_bucket_t* find_file_duplicates (struct scrapbook_t *sb, struct file_
         printf ("\n");
 
         if (had_to_split_buckets) {
-            printf ("warning: non-equal files passed the partial equality test by hash. "
+            printf (ECMA_YELLOW("warning:") " non-equal files passed the partial equality test by hash. "
                     "Either there was a hash collision or the content of the file was "
                     "the same only up to a certain point.\n\n");
         }
@@ -714,8 +780,8 @@ struct file_bucket_t* find_image_duplicates (struct scrapbook_t *sb, struct file
     }
     printf ("Tentative non unique file count: %d\n", num_tentative_non_unique_files);
 
-    print_bucket_list_fnames (tentative_duplicates);
-    print_bucket_list_path (tentative_duplicates);
+    print_bucket_list (tentative_duplicates, PATH_FORMAT_FNAME);
+    print_bucket_list (tentative_duplicates, PATH_FORMAT_ABSOLUTE);
 
     struct file_bucket_t *exact_duplicates = NULL;
     uint64_t exact_duplicates_len = 0;
@@ -794,6 +860,7 @@ void remove_duplicates (struct scrapbook_t *sb,
                 strstr(str_data(&curr_str->path), removal_filter) == str_data(&curr_str->path))
             {
                 LINKED_LIST_PUSH_NEW (&sb->pool, struct file_header_t, files_to_remove, new_string);
+                files_to_remove_len++;
                 str_set(&new_string->path, str_data(&curr_str->path));
             }
         }
@@ -921,6 +988,14 @@ int main (int argc, char **argv)
         struct file_header_t *images = collect_files_from_cli (&scrapbook.pool, NULL, paths, paths_count);
         struct file_bucket_t *duplicates = find_file_duplicates (&scrapbook, images);
         remove_duplicates (&scrapbook, duplicates, remove_substr, removal_filter, is_dry_run);
+
+        //print_bucket_list (duplicates, PATH_FORMAT_FNAME);
+        //printf ("\n");
+
+        if (duplicates != NULL && duplicates->count > 0) {
+            print_bucket_duplicates (paths, paths_count, duplicates, PATH_FORMAT_ABSOLUTE);
+        }
+
 
     } else if ((argument = get_cli_arg_opt ("--find-duplicates-image", argv, argc)) != NULL) {
         struct file_header_t *images = collect_jpg_from_cli (&scrapbook.pool, argv+2, argc-2);
