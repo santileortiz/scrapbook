@@ -176,6 +176,14 @@ bool duplicate_file_name_cmp (struct file_header_t *p1, struct file_header_t *p2
     // I've seen file duplicates with .HEIC and .heif extensions, I don't know
     // what creates these .heif copies but they seem to be the odd ones because
     // the overwhelming majority of files is .HEIC.
+    //
+    // Also, downloads from the web browser's UI of Google Photos will rename
+    // .HEIC files to .jpg. I didn't know these were replaceable. This is bad
+    // because it seems that the web download provides the original files but
+    // with a non-original filename. Using the REST API via rclone does restore
+    // the original filename, but seems to return different data than the
+    // original, sigh.
+    //
     // TODO: Is there a similar preference between .jpeg and .jpg?... maybe we
     // should just prefer the most common extension?.
     } else if (strcasecmp(get_extension(fname1), "HEIC") == 0) {
@@ -999,7 +1007,11 @@ int main (int argc, char **argv)
 
     } else if ((argument = get_cli_arg_opt ("--find-duplicates-image", argv, argc)) != NULL) {
         struct file_header_t *images = collect_jpg_from_cli (&scrapbook.pool, argv+2, argc-2);
-        find_image_duplicates (&scrapbook, images);
+        struct file_bucket_t *duplicates = find_image_duplicates (&scrapbook, images);
+
+        if (duplicates != NULL && duplicates->count > 0) {
+            print_bucket_duplicates (paths, paths_count, duplicates, PATH_FORMAT_ABSOLUTE);
+        }
 
     } else {
         printf ("Usage:\n");
